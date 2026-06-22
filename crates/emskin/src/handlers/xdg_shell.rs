@@ -405,13 +405,10 @@ pub fn wants_floating(_state: &EmskinState, surface: &ToplevelSurface) -> bool {
 }
 
 /// Extract a short display name from an Emacs frame title for the workspace bar.
-/// Strips " - GNU Emacs ..." suffix and "*eaf: " prefix.
-/// e.g. "*eaf: firefox* - GNU Emacs at home" → "firefox*"
-///      "*scratch* - GNU Emacs at home" → "*scratch*"
+/// Strips " - GNU Emacs ..." suffix.
+/// e.g. "*scratch* - GNU Emacs at home" → "*scratch*"
 fn extract_bar_name(title: &str) -> String {
-    let base = title.split(" - GNU Emacs").next().unwrap_or(title).trim();
-    let base = base.strip_prefix("*eaf: ").unwrap_or(base);
-    base.to_string()
+    title.split(" - GNU Emacs").next().unwrap_or(title).trim().to_string()
 }
 
 // Xdg Shell

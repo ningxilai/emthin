@@ -44,7 +44,7 @@
                          (max 0 (- h frame-h)))))
         (setq emskin--header-offset offset)
         (message "emskin: surface=%sx%s bars=%dpx" w h offset)
-        ;; Re-sync EAF windows with the updated surface dims.
+        ;; Re-sync embedded app windows with the updated surface dims.
         (dolist (frame (frame-list))
           (emskin--sync-frame frame))))
      ((string= type "workspace_created")
@@ -100,13 +100,14 @@ rather than assuming the elisp toggle is the single source of truth."
       (setq-local right-margin-width 0)
       (setq-local cursor-type nil)
       (add-hook 'kill-buffer-hook #'emskin--kill-buffer-hook nil t)
-      ;; Buffer-local: only fires when the user is STILL on this EAF
-      ;; buffer after the prefix command. That's the right time to ask
-      ;; the compositor to restore keyboard focus to the embedded app.
-      ;; If the prefix command (e.g. C-x b) switches to a different
-      ;; buffer, post-command-hook fires for THAT buffer instead — the
-      ;; global `prefix_clear' hook below picks up the IME-state-only
-      ;; cleanup without bouncing focus back to the now-hidden EAF.
+      ;; Buffer-local: only fires when the user is STILL on this
+      ;; embedded app buffer after the prefix command. That's the right
+      ;; time to ask the compositor to restore keyboard focus to the
+      ;; embedded app.  If the prefix command (e.g. C-x b) switches to a
+      ;; different buffer, post-command-hook fires for THAT buffer
+      ;; instead — the global `prefix_clear' hook below picks up the
+      ;; IME-state-only cleanup without bouncing focus back to the
+      ;; now-hidden embedded app.
       (add-hook 'post-command-hook #'emskin--post-command-prefix-done nil t))
     (let ((target (emskin--take-native-app-target-window)))
       (if target
@@ -155,7 +156,7 @@ rather than assuming the elisp toggle is the single source of truth."
     (message "emskin: window %s destroyed" window-id)))
 
 (defun emskin--on-title-changed (window-id title)
-  "Rename the EAF buffer when the app title changes."
+  "Rename the embedded app buffer when the app title changes."
   (when-let ((buf (emskin--find-buffer window-id)))
     (with-current-buffer buf
       (rename-buffer (format "*emskin: %s*" title) t))))
@@ -184,10 +185,10 @@ VIEW-ID 0 means the source window; otherwise look up the mirror alist."
                         (window_id . ,emskin--window-id)))))
 
 (defun emskin--post-command-prefix-done ()
-  "After a command completes IN AN EAF BUFFER, ask the compositor to
-restore keyboard focus to the embedded app (clearing prefix state
-along the way). Registered buffer-locally — only fires when the
-post-command tick runs while the EAF buffer is still current."
+  "After a command completes in an embedded app buffer, ask the
+compositor to restore keyboard focus to the embedded app (clearing
+prefix state along the way). Registered buffer-locally — only fires
+when the post-command tick runs while the app buffer is still current."
   (when emskin--process
     (emskin--send '((type . "prefix_done")))))
 
@@ -197,7 +198,7 @@ command, in any buffer.
 
 emskin disables host IME for the duration of an Emacs prefix chord
 (C-x ...) so the chord doesn't get eaten by fcitx5. Without a global
-clear, plain Emacs chords like `C-x b' (which switch to a non-EAF
+clear, plain Emacs chords like `C-x b' (which switch to a non-app
 buffer, so the buffer-local `prefix_done' hook above doesn't fire)
 would leave host IME disabled until the user clicks out and back.
 
@@ -294,14 +295,14 @@ Covers the body area (excludes fringes, margins, header-line, mode-line)."
 ;; ---------------------------------------------------------------------------
 
 (defun emskin--sync-frame (frame)
-  "Sync visibility, geometry, and mirrors for EAF buffers in FRAME.
+  "Sync visibility, geometry, and mirrors for embedded app buffers in FRAME.
 Only processes FRAME — never iterates other frames.  Skips the sync
 if FRAME does not belong to the active workspace, which eliminates
 race conditions during workspace switches."
   (when emskin--process
   (let ((ws-id (gethash frame emskin--frame-workspace-table)))
     (when (eql ws-id emskin--active-workspace-id)
-    ;; Pass 1: collect Emacs windows showing each EAF buffer in this frame.
+    ;; Pass 1: collect Emacs windows showing each embedded app buffer in this frame.
     (let ((wid-wins (make-hash-table :test 'eql)))
       (dolist (win (window-list frame 'no-minibuf))
         (when-let ((wid (buffer-local-value 'emskin--window-id
@@ -310,7 +311,7 @@ race conditions during workspace switches."
           (set-window-fringes win 0 0)
           (set-window-margins win 0 0)
           (puthash wid (append (gethash wid wid-wins) (list win)) wid-wins)))
-      ;; Pass 2: for each EAF buffer, sync source + mirrors.
+      ;; Pass 2: for each embedded app buffer, sync source + mirrors.
       (dolist (buf (buffer-list))
         (when-let ((wid (buffer-local-value 'emskin--window-id buf)))
           (let* ((wins (gethash wid wid-wins))
@@ -381,7 +382,7 @@ race conditions during workspace switches."
 
 (defun emskin--sync-focus (&optional _frame)
   "Tell the compositor which surface should have keyboard focus.
-When the selected window shows an EAF buffer, focus the app;
+When the selected window shows an embedded app buffer, focus the app;
 otherwise focus Emacs.  Skips IPC when focus hasn't changed."
   (when emskin--process
     (let ((wid (buffer-local-value 'emskin--window-id

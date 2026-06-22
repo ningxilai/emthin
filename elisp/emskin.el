@@ -11,14 +11,6 @@
 (defvar emskin-ipc-path nil
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
 
-(defvar emskin-demo-dir
-  (expand-file-name
-   "../demo"
-   (file-name-directory
-    (or load-file-name buffer-file-name
-        "~/.emacs.d/site-lisp/emacs-application-framework/mvp/elisp/")))
-  "Directory containing EAF demo/app Python scripts.")
-
 ;; ---------------------------------------------------------------------------
 ;; Effect toggles
 ;;
@@ -92,10 +84,10 @@ disappears.")
   "emskin window_id for the embedded app in this buffer.")
 
 (defvar-local emskin--visible nil
-  "Whether this EAF buffer is currently displayed in an Emacs window.")
+  "Whether this embedded app buffer is currently displayed in an Emacs window.")
 
 (defvar-local emskin--last-geometry nil
-  "Last geometry sent for this buffer's EAF window, to skip no-op updates.")
+  "Last geometry sent for this buffer's embedded app window, to skip no-op updates.")
 
 (defvar emskin--mirror-table (make-hash-table :test 'eql)
   "Tracks source and mirror windows per embedded app.
@@ -167,15 +159,6 @@ sync on every flip."
       (setq target (pop emskin--pending-native-app-targets)))
     (when (window-live-p target)
       target)))
-
-(defun emskin-open-app (app-name)
-  "Launch embedded application APP-NAME (Python script in `emskin-demo-dir')."
-  (interactive "sApp name: ")
-  (let ((script (expand-file-name (format "%s.py" app-name) emskin-demo-dir)))
-    (unless (file-exists-p script)
-      (error "EAF script not found: %s" script))
-    (start-process (format "emskin-%s" app-name) nil "python3" script)
-    (message "emskin: launched %s" app-name)))
 
 (defun emskin-open-native-app (command)
   "Launch a native Wayland application inside emskin.
