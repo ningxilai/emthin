@@ -4,24 +4,8 @@
 
 (require 'emskin-ipc)
 
-;; ---------------------------------------------------------------------------
-;; Connection settings
-;; ---------------------------------------------------------------------------
-
 (defvar emskin-ipc-path nil
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
-
-;; ---------------------------------------------------------------------------
-;; Config sync
-;; ---------------------------------------------------------------------------
-
-(defun emskin-apply-config ()
-  "Re-sync state with the compositor after `setq' changes."
-  (interactive)
-  (unless emskin--process
-    (user-error "emskin: not connected"))
-  (run-hooks 'emskin-connected-hook)
-  (message "emskin: config applied"))
 
 ;; ---------------------------------------------------------------------------
 ;; Auto-connect when running inside emskin

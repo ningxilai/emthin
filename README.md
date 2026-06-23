@@ -145,7 +145,7 @@ All default to off. Configure in `~/.emacs.d/init.el`:
       emskin-jelly-cursor t)
 ```
 
-Values sync automatically on IPC connect, so `setq` works unchanged. After changing a variable mid-session, run `M-x emskin-apply-config` to push it immediately.
+Values sync automatically on IPC connect, so `setq` works unchanged.
 
 ### Recording & screenshots
 
@@ -156,7 +156,7 @@ Two independent commands; either one works while the other is active:
 | `M-x emskin-toggle-record` | `~/Videos/emskin/emskin-YYYYMMDD-HHMMSS.mp4` | `emskin-record-dir`, `emskin-record-fps` (default 30) |
 | `M-x emskin-screenshot` | `~/Videos/emskin/emskin-YYYYMMDD-HHMMSS.png` | `emskin-screenshot-dir` (defaults to `emskin-record-dir`) |
 
-The recorder is also exposed as a regular toggle (above), so it picks up the same `setq` + `emskin-apply-config` lifecycle as the other effects. Bind to your key of choice — for example:
+The recorder is also exposed as a regular toggle (above). Bind to your key of choice — for example:
 
 ```elisp
 (global-set-key (kbd "C-c C-r") #'emskin-toggle-record)
