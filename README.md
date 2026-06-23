@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="images/banner.png" alt="emskin — Emacs dressed in a Wayland compositor" width="720"/>
-</p>
-
 # emskin
 
 > Dress Emacs in a Wayland skin.
@@ -9,8 +5,6 @@
 [中文文档](README_cn.md)
 
 emskin wraps Emacs inside a nested Wayland compositor so that **any program** — browsers, terminals, video players, etc. — can be embedded into Emacs windows as if they were native buffers.
-
-![demo](images/demo.gif)
 
 ## Vision
 

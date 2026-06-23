@@ -1,16 +1,10 @@
-<p align="center">
-  <img src="images/banner.png" alt="emskin — Emacs dressed in a Wayland compositor" width="720"/>
-</p>
-
 # emskin
 
-> 给 Emacs 加上皮肤 — Dress Emacs in a Wayland skin.
+> Dress Emacs in a Wayland skin.
 
 [English](README.md)
 
-emskin 把 Emacs 放进一个 Wayland 合成器里，让**任意程序**（浏览器、终端、视频播放器等）都能像原生 buffer 一样嵌入 Emacs 窗口。
-
-![demo](images/demo.gif)
+emskin 将 Emacs 包裹在一个嵌套的 Wayland 合成器中，这样**任何程序**——浏览器、终端、视频播放器等——都可以嵌入到 Emacs 窗口中，就像它们是原生缓冲区一样。
 
 ## 愿景
 
