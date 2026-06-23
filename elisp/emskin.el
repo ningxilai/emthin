@@ -12,57 +12,6 @@
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
 
 ;; ---------------------------------------------------------------------------
-;; Effect toggles
-;;
-;; Each effect has its implementation in a sibling file.  Flip live with
-;; the corresponding `emskin-toggle-*' command; set in your init file
-;; (e.g. `~/.emacs.d/init.el') with `setq' and (optionally) re-apply
-;; with `M-x emskin-apply-config' — or just wait for the next IPC
-;; connect.
-;; ---------------------------------------------------------------------------
-
-(defvar emskin-measure nil
-  "Non-nil to show the measure overlay — a Figma-style pixel inspector.
-Crosshair at the mouse pointer, coordinates label next to it, and
-ruler strips along the top/left edges.  Toggle with
-`emskin-toggle-measure'.")
-
-(defvar emskin-skeleton nil
-  "Non-nil to show the skeleton overlay — a frame-layout debug inspector.
-Wireframes around frame chrome, every window, header / mode-line,
-echo-area, labels with kind + geometry; clicking a label flashes the
-rect.  Toggle with `emskin-toggle-skeleton'.")
-
-(defvar emskin-cursor-trail nil
-  "Non-nil to show the cursor-trail effect — an elastic mouse-pointer trail.
-Spring-damped circles follow the pointer and bounce back when it
-stops.  Toggle with `emskin-toggle-cursor-trail'.")
-
-(defvar emskin-key-cast nil
-  "Non-nil to show the key-cast overlay — live keystroke display.
-Recently pressed chords appear in a rounded translucent pill at the
-bottom of the screen, useful for screencasts and pair programming.
-Auto-enabled while recording (see `emskin-toggle-record').  Toggle
-manually with `emskin-toggle-key-cast'.")
-
-(defvar emskin-jelly-cursor nil
-  "Non-nil to show the jelly text-cursor animation.
-On every command that moves point, a filled quadrilateral stretches
-from the previous caret rect to the new one (200 ms), then collapses
-into the new position.  Ported from holo-layer's `jelly' style.
-Toggle with `emskin-toggle-jelly-cursor'.")
-
-(defvar emskin-jelly-fallback-color "#89dceb"
-  "Fallback jelly color when the `cursor' face has no background set.
-Most themes set one, so this rarely shows.")
-
-(defvar emskin-record nil
-  "Non-nil while emskin is recording the composited output to a video file.
-Toggle with `emskin-toggle-record'.  Each start writes a fresh
-timestamped `.mp4' under `emskin-record-dir'.  `emskin-screenshot' is
-a separate one-shot PNG capture that works independently.")
-
-;; ---------------------------------------------------------------------------
 ;; Shared internal state
 ;; ---------------------------------------------------------------------------
 
@@ -126,12 +75,6 @@ back to the generic `display-buffer' path.")
 (require 'emskin-ipc)
 (require 'emskin-app)
 (require 'emskin-workspace)
-(require 'emskin-measure)
-(require 'emskin-skeleton)
-(require 'emskin-cursor-trail)
-(require 'emskin-jelly)
-(require 'emskin-key-cast)
-(require 'emskin-record)
 
 ;; ---------------------------------------------------------------------------
 ;; Config sync

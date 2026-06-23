@@ -12,7 +12,7 @@ use smithay::{
     wayland::compositor::{with_surface_tree_downward, TraversalAction},
 };
 
-use crate::winit::CustomElement;
+use crate::element::CustomElement;
 use crate::EmskinState;
 
 /// Snapshot of one mapped surface within a layer's subsurface tree, in

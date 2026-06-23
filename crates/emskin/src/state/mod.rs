@@ -1,7 +1,6 @@
 pub mod apps;
 pub mod cursor;
 pub mod dbus;
-pub mod effects;
 pub mod emacs;
 pub mod focus;
 pub mod ime;
@@ -229,11 +228,6 @@ pub struct EmskinState {
     /// IME (text_input_v3) bridge — host IME ↔ embedded Wayland clients.
     pub ime: crate::ime::ImeBridge,
 
-    /// Built-in visual overlays + their host-side edge-detect flags.
-    /// Grouped so the render loop and workspace-switch reset both see
-    /// a single cohesive module instead of eleven flat fields.
-    pub effects: effects::EffectsState,
-
     /// Cursor image tracking (Named / Surface) + raw pointer location
     /// for `zwp_relative_pointer_v1` delta synthesis.
     pub cursor: cursor::CursorState,
@@ -364,7 +358,6 @@ impl EmskinState {
             selection: SelectionState::default(),
             focus: FocusState::default(),
             ime,
-            effects: effects::EffectsState::default(),
             cursor: cursor::CursorState::default(),
             needs_redraw: true,
             recorder: crate::recording::Recorder::new(),
@@ -632,8 +625,6 @@ impl EmskinState {
         // makes future field additions self-documenting.
         self.focus.reset_on_workspace_switch();
         self.ime.reset_on_workspace_switch();
-        self.effects
-            .reset_on_workspace_switch(self.start_time.elapsed());
 
         self.cursor.reset_on_workspace_switch();
 

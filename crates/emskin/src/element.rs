@@ -1,8 +1,3 @@
-//! The `CustomElement` sum type produced by the render pipeline.
-//!
-//! Moved here from `emskin/src/winit.rs` so both effects and the compositor
-//! host can speak the same element vocabulary.
-
 use smithay::{
     backend::renderer::{
         element::{
@@ -15,9 +10,6 @@ use smithay::{
     render_elements,
 };
 
-/// Blanket trait bundling renderer constraints for the `render_elements!` macro
-/// (which cannot parse associated-type bounds like
-/// `Renderer<TextureId = GlesTexture>`).
 pub trait EmskinRenderer: ImportAll + ImportMem + Renderer<TextureId = GlesTexture> {}
 impl<R: ImportAll + ImportMem + Renderer<TextureId = GlesTexture>> EmskinRenderer for R {}
 

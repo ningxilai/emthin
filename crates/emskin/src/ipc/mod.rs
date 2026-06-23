@@ -5,7 +5,7 @@ pub mod messages;
 use std::os::unix::net::UnixListener;
 
 use connection::IpcConn;
-pub use messages::{IncomingMessage, IpcRect, OutgoingMessage, SkeletonRect};
+pub use messages::{IncomingMessage, IpcRect, OutgoingMessage};
 
 /// IPC server: listens for a single Emacs connection and exchanges JSON messages.
 pub struct IpcServer {

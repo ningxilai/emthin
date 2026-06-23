@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod clipboard_bridge;
+pub mod element;
 pub mod grabs;
 pub mod handlers;
 pub mod input;
@@ -15,5 +16,5 @@ pub mod xwayland_satellite;
 // Re-export state sub-modules at crate root so existing
 // `crate::apps::*`, `crate::focus::*`, `crate::ime::*`,
 // `crate::workspace::*` paths keep resolving.
-pub use state::{apps, cursor, effects, emacs, focus, ime, workspace, xwayland};
+pub use state::{apps, cursor, emacs, focus, ime, workspace, xwayland};
 pub use state::{EmskinState, KeyboardFocusTarget};

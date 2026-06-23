@@ -19,13 +19,14 @@ use smithay::{
         keyboard::FilterResult,
         pointer::{CursorImageStatus, CursorImageSurfaceData},
     },
+    desktop::{space::render_output, Window},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Logical, Physical, Rectangle, Size, Transform, SERIAL_COUNTER},
+    utils::{Physical, Rectangle, Size, Transform, SERIAL_COUNTER},
     wayland::compositor::with_states,
 };
 
-pub use effect_core::CustomElement;
+use crate::element::CustomElement;
 
 use crate::EmskinState;
 
@@ -142,27 +143,9 @@ fn render_frame(
             return;
         };
 
-        // emskin's responsibility: produce the per-frame snapshot data and
-        // feed it into `effect_core::render_workspace`. Effect-core owns the
-        // smithay `render_output` call and all damage-tracking bookkeeping.
-        let scale = output.current_scale().fractional_scale();
-        let output_size_log: Size<i32, Logical> = size.to_f64().to_logical(scale).to_i32_round();
-        // Effects paint into the non-exclusive zone — the space layer-shell
-        // surfaces (e.g. the external bar) haven't claimed. Falls back to the
-        // full output when no bar / no layer is mapped.
-        let canvas = state
-            .emacs_geometry()
-            .unwrap_or_else(|| Rectangle::from_size(output_size_log));
-
-        // Edge-detect Emacs connection and trigger `splash.dismiss` once.
-        let emacs_now = state.emacs.has_main_surface();
-        if emacs_now && !state.effects.last_emacs_connected {
-            state.effects.splash.borrow_mut().dismiss();
-        }
-        state.effects.last_emacs_connected = emacs_now;
-
         // Non-effect elements: software cursor, layer shell surfaces, window
         // mirrors. emskin assembles these itself.
+        let scale = output.current_scale().fractional_scale();
         let mut extras: Vec<CustomElement<GlesRenderer>> = Vec::new();
 
         // Software cursor (topmost of extras): used for Surface cursors
@@ -218,33 +201,19 @@ fn render_frame(
             state, renderer, scale,
         ));
 
-        let effect_ctx = effect_core::EffectCtx {
-            cursor_pos: state.seat.get_pointer().map(|p| p.current_location()),
-            canvas,
-            scale,
-            present_time: state.start_time.elapsed(),
-        };
-
-        match effect_core::render_workspace(
+        if let Err(e) = render_output::<GlesRenderer, CustomElement<GlesRenderer>, Window, _>(
             output,
             renderer,
             &mut framebuffer,
-            &state.workspace.active_space,
-            &mut state.effects.chain,
-            &effect_ctx,
-            extras,
+            1.0,
+            0,
+            [&state.workspace.active_space],
+            &extras,
             damage_tracker,
             [1.0, 1.0, 1.0, 1.0],
         ) {
-            Ok(outcome) => {
-                if outcome.want_redraw {
-                    state.needs_redraw = true;
-                }
-            }
-            Err(e) => {
-                tracing::error!("render_workspace failed: {e}");
-                return;
-            }
+            tracing::error!("render_output failed: {e}");
+            return;
         }
 
         // Screencast hook. Fills the PBO here while the winit EGL surface
@@ -282,39 +251,6 @@ fn render_frame(
                 duration_secs: ev.duration.as_secs_f64(),
                 reason: ev.reason.as_str().to_string(),
             });
-    }
-
-    // Derive the overlay state from the recorder (single source of
-    // truth): regardless of what triggered start/stop — user IPC,
-    // auto-stop on resize, ffmpeg spawn failure, size mismatch — the
-    // dot stays in lockstep with whatever the recorder actually is.
-    let now = state.start_time.elapsed();
-    let overlay_at = state.recorder.overlay_started_at(now);
-    state
-        .effects
-        .recorder_overlay
-        .borrow_mut()
-        .set_active(overlay_at);
-
-    // Recording ⇆ KeyCast linkage. Edge-trigger only so user toggles
-    // (`SetKeyCast` IPC) outside a recording session aren't stomped.
-    let recording_active = overlay_at.is_some();
-    if recording_active != state.effects.last_recording_active {
-        state.effects.last_recording_active = recording_active;
-        state
-            .effects
-            .key_cast
-            .borrow_mut()
-            .set_enabled(recording_active);
-        tracing::debug!(
-            "key_cast auto-{} (recording {})",
-            if recording_active { "on" } else { "off" },
-            if recording_active {
-                "started"
-            } else {
-                "stopped"
-            }
-        );
     }
 
     // Keep the render loop warm while a capture/recording is in progress —
