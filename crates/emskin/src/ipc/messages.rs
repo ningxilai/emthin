@@ -92,9 +92,6 @@ pub enum OutgoingMessage {
     Connected {
         version: &'static str,
     },
-    Error {
-        msg: String,
-    },
     WindowCreated {
         window_id: u64,
         title: String,

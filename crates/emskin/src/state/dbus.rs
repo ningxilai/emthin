@@ -325,15 +325,13 @@ fn create_session_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Subpath helper exposed for unit tests.
-#[allow(dead_code)]
-pub fn format_bus_address(listen_path: &Path) -> String {
-    format!("unix:path={}", listen_path.display())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn format_bus_address(listen_path: &Path) -> String {
+        format!("unix:path={}", listen_path.display())
+    }
 
     #[test]
     fn inject_env_is_noop_when_inert() {

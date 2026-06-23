@@ -90,10 +90,6 @@ impl Unlink {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
-
-    pub fn path(&self) -> &std::path::Path {
-        &self.0
-    }
 }
 
 impl Drop for Unlink {

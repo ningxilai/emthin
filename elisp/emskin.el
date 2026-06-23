@@ -81,9 +81,7 @@ back to the generic `display-buffer' path.")
 ;; ---------------------------------------------------------------------------
 
 (defun emskin-apply-config ()
-  "Re-push every registered effect's current value to the compositor.
-Use after modifying variables with `setq'; toggle commands already
-sync on every flip."
+  "Re-sync state with the compositor after `setq' changes."
   (interactive)
   (unless emskin--process
     (user-error "emskin: not connected"))

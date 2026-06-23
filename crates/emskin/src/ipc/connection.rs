@@ -106,7 +106,7 @@ impl IpcConn {
         Ok(false)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_pending_writes(&self) -> bool {
         !self.write_buf.is_empty()
     }
