@@ -1,31 +1,19 @@
 # emskin
 
-> Dress Emacs in a Wayland skin.
+> 让 Emacs 内能够使用 Wayland 应用
 
 [中文文档](README_cn.md)
 
-emskin wraps Emacs inside a nested Wayland compositor so that **any program** — browsers, terminals, video players, etc. — can be embedded into Emacs windows as if they were native buffers.
-
-## Vision
-
-Embedding is the first 5%. The endgame is **Emacs deeply scripting the native apps it hosts** — querying and orchestrating them with the same uniformity Emacs already gives its own buffers. Concretely:
-
-- **Browser** — read the focused tab's DOM into a buffer, eval JS, drive forms from Elisp, route LLM tool calls into the live page.
-- **Terminal** — file/line heuristics in output become clickable jumps back into Emacs; rerun the last command into a fresh buffer.
-- **Video / image apps** — scriptable seek, frame extraction, OCR — all exposed as Elisp commands.
-- **Anything with a surface** — that surface becomes addressable from Elisp.
-
-Same IPC layer (compositor ↔ Elisp) that powers embedding today; each future integration adds one IPC verb on top.
+emskin wraps Emacs inside a nested Wayland compositor so that Wayland applications can be embedded into Emacs windows.
 
 ## Features
 
-- **Embed any program** — Wayland and X11 apps alike, including FPS games / browser Pointer Lock (pointer constraints + raw mouse delta)
+- **Embed Wayland apps** — browsers, terminals, etc. inside Emacs windows
 - **Window mirroring** — display the same app in multiple Emacs windows
 - **Input method support** — shares the host IM with precise cursor positioning
 - **Clipboard sync** — bidirectional between host and embedded apps
 - **Launcher support** — rofi / wofi / zofi work out of the box
 - **Automatic focus management** — new windows auto-focus; focus falls back on close
-- **Built-in screen recording & screenshots** — toggle MP4 capture or snap a PNG, no external tools
 
 ## Compatibility
 
@@ -102,10 +90,10 @@ emskin --standalone
 What it does:
 
 - Pre-loads the bundled `emskin.el` from `$XDG_RUNTIME_DIR/emskin-<pid>/elisp/` so you don't need a `(require 'emskin)` of your own.
-- Your **`~/.emacs.d/init.el` still loads as usual** — no `-Q`, no `--no-init-file`. Your packages, keybindings, themes, `(setq emskin-cursor-trail t)` etc. all keep working.
+- Your **`~/.emacs.d/init.el` still loads as usual** — no `-Q`, no `--no-init-file`.
 - Cleans up the extracted elisp dir on exit.
 
-The only edge case: if you separately cloned emskin and added `(require 'emskin)` from your own `load-path`, the bundled copy will have already been loaded and your `require` becomes a no-op. Developers working on emskin itself should skip `--standalone` and load the elisp manually (see [Emacs Configuration](#emacs-configuration)).
+The only edge case: if you separately cloned emskin and added `(require 'emskin')` from your own `load-path`, the bundled copy will have already been loaded and your `require` becomes a no-op. Developers working on emskin itself should skip `--standalone` and load the elisp manually (see [Emacs Configuration](#emacs-configuration)).
 
 ## Usage
 
@@ -126,42 +114,6 @@ When an embedded app has focus, keystrokes go directly to it. Emacs prefix keys 
 - `C-x o` — switch Emacs windows (embedded apps follow buffer switches)
 - `C-x 1` / `C-x 2` / `C-x 3` — normal window operations; embedded apps resize automatically
 
-### Effects
-
-emskin ships five live-toggleable effects, plus a non-toggleable startup splash.
-
-| Effect | Variable | Toggle | What it does |
-|--------|----------|--------|--------------|
-| measure | `emskin-measure` | `M-x emskin-toggle-measure` | Figma-style pixel inspector: crosshair, coordinates, rulers |
-| skeleton | `emskin-skeleton` | `M-x emskin-toggle-skeleton` | Frame-layout wireframes (debug overlay, clickable labels) |
-| cursor trail | `emskin-cursor-trail` | `M-x emskin-toggle-cursor-trail` | Elastic spring trail behind the mouse pointer |
-| jelly cursor | `emskin-jelly-cursor` | `M-x emskin-toggle-jelly-cursor` | Jelly-style animation on Emacs's text caret (pgtk-only color sync) |
-| recorder | `emskin-record` | `M-x emskin-toggle-record` | MP4 screen capture with on-screen indicator (red dot + MM:SS timer) |
-
-All default to off. Configure in `~/.emacs.d/init.el`:
-
-```elisp
-(setq emskin-cursor-trail t
-      emskin-jelly-cursor t)
-```
-
-Values sync automatically on IPC connect, so `setq` works unchanged.
-
-### Recording & screenshots
-
-Two independent commands; either one works while the other is active:
-
-| Command | Output | Customize |
-|---------|--------|-----------|
-| `M-x emskin-toggle-record` | `~/Videos/emskin/emskin-YYYYMMDD-HHMMSS.mp4` | `emskin-record-dir`, `emskin-record-fps` (default 30) |
-| `M-x emskin-screenshot` | `~/Videos/emskin/emskin-YYYYMMDD-HHMMSS.png` | `emskin-screenshot-dir` (defaults to `emskin-record-dir`) |
-
-The recorder is also exposed as a regular toggle (above). Bind to your key of choice — for example:
-
-```elisp
-(global-set-key (kbd "C-c C-r") #'emskin-toggle-record)
-```
-
 ### Workspaces
 
 Each Emacs frame maps to a workspace:
@@ -169,19 +121,6 @@ Each Emacs frame maps to a workspace:
 - `C-x 5 2` — create workspace
 - `C-x 5 o` — switch workspace
 - `C-x 5 0` — close current workspace
-
-A top-anchored workspace bar (`emskin-bar`) appears automatically once a
-second workspace exists and disappears when you drop back to one. Control it
-via `--bar=<mode>` on the `emskin` CLI:
-
-- `--bar=auto` *(default)* — find `emskin-bar` next to the emskin binary, falling back to `PATH`
-- `--bar=none` — don't launch a bar (e.g. you run waybar yourself)
-- `--bar=/path/to/binary` — launch a custom bar instead (anything speaking `zwlr-layer-shell-v1 + ext-workspace-v1`, such as waybar with the right modules)
-
-The bar is a standalone Wayland client — it never talks to emskin's private
-IPC, only standard Wayland protocols — and its lifecycle follows the
-compositor: it starts when emskin starts and exits when the Wayland socket
-closes.
 
 ### Launchers
 
@@ -227,7 +166,6 @@ emskin [OPTIONS]
   --arg <ARG>             Arguments for --command (repeatable)
   --ipc-path <PATH>       IPC socket path (default: $XDG_RUNTIME_DIR/emskin-<pid>.ipc)
   --wayland-socket <NAME> Pin Wayland display socket name (default: wayland-N, auto)
-  --bar <MODE>            Workspace bar: "auto" (default), "none", or a path
   --xkb-layout <LAYOUT>   Keyboard layout (e.g. "us", "cn")
   --xkb-model <MODEL>     Keyboard model (e.g. "pc105")
   --xkb-variant <VAR>     Layout variant (e.g. "nodeadkeys")
@@ -279,31 +217,6 @@ xrandr --output Virtual-1 --mode 1920x1080
 ```
 
 Make sure mesa is installed: `sudo pacman -S mesa mesa-utils` (Arch) or `sudo apt install mesa-utils` (Debian/Ubuntu).
-
-## Acknowledgements
-
-emskin began as a purpose-built Wayland compositor for the
-[Emacs Application Framework (EAF)](https://github.com/emacs-eaf/emacs-application-framework).
-The original goal was narrow: get EAF's apps running properly under
-Wayland. The broader "embed any Wayland or X11 client into an Emacs
-window" capability you see here today grew out of solving that one
-problem. Huge thanks to [@manateelazycat](https://github.com/manateelazycat)
-for EAF and for years of pushing what an Emacs UI can be — and again
-for [holo-layer](https://github.com/manateelazycat/holo-layer), from
-which the jelly text-cursor effect and the elisp caret-tracking
-pattern (`post-command-hook` + `pos-visible-in-window-p`) are adapted.
-
-emskin is built on [Smithay](https://github.com/Smithay/smithay) — the
-Rust Wayland compositor library that does most of the heavy protocol
-work.
-
-The on-demand XWayland path (`crates/emskin/src/xwayland_satellite/`) is
-ported from [niri](https://github.com/YaLTeR/niri) (`src/utils/xwayland/`,
-GPL-3.0-or-later) — attribution and original license preserved in each
-file header. The external X server process itself is
-[xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite)
-by Shawn Wallace — it shoulders the whole X ↔ Wayland protocol
-translation so emskin never has to speak X.
 
 ## License
 

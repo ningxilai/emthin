@@ -7,7 +7,7 @@ use emskin_clipboard::{BackendHint, ClipboardBackend};
 
 static ELISP_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../elisp");
 
-/// Nested Wayland compositor for Emacs Application Framework.
+/// Nested Wayland compositor that lets Emacs embed and use Wayland applications.
 #[derive(Parser, Debug)]
 #[command(
     name = "emskin",
