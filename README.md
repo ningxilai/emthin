@@ -1,7 +1,5 @@
 # emskin
 
-> 让 Emacs 内能够使用 Wayland 应用
-
 [中文文档](README_cn.md)
 
 emskin wraps Emacs inside a nested Wayland compositor so that Wayland applications can be embedded into Emacs windows.

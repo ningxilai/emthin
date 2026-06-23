@@ -1,7 +1,5 @@
 # emskin
 
-> 让 Emacs 内能够使用 Wayland 应用
-
 [English](README.md)
 
 emskin 将 Emacs 包裹在一个嵌套的 Wayland 合成器中，让 Wayland 应用可以嵌入到 Emacs 窗口中。
