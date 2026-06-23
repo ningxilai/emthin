@@ -8,7 +8,7 @@ edition = "2021"
 authors = ["Lee <loyalpartner@163.com>"]
 license = "GPL-3.0"
 repository = "https://github.com/emskin/emskin"
-description = "Nested Wayland compositor for Emacs"
+description = "Embed Wayland applications inside Emacs"
 
 [dependencies]
 emskin-clipboard = { path = "../emskin-clipboard" }
@@ -28,7 +28,6 @@ wayland-protocols = { version = "0.32", features = ["client", "server", "staging
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 include_dir = "0.7"
-png = "0.17"
 
 [dev-dependencies]
 tempfile = "3"

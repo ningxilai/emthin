@@ -1,4 +1,3 @@
-pub mod capture;
 pub mod clipboard_bridge;
 pub mod element;
 pub mod grabs;
@@ -7,7 +6,6 @@ pub mod input;
 pub mod ipc;
 pub mod mirror_render;
 pub mod protocols;
-pub mod recording;
 pub mod state;
 pub mod tick;
 pub mod winit;

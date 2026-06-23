@@ -63,26 +63,6 @@ pub enum IncomingMessage {
     SwitchWorkspace {
         workspace_id: u64,
     },
-    /// Request a one-shot PNG screenshot of the composited output, written
-    /// to the given absolute path. Replaces any previously queued request.
-    TakeScreenshot {
-        path: String,
-    },
-    /// Start/stop a continuous video recording.
-    ///
-    /// `enabled: true` begins a new recording; `path` and `fps` are required
-    /// in that case (the compositor rejects the request otherwise). If a
-    /// recording is already running, it is cancelled and replaced.
-    ///
-    /// `enabled: false` stops the active recording; `path` and `fps` are
-    /// ignored.
-    SetRecording {
-        enabled: bool,
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        fps: Option<u32>,
-    },
 }
 
 /// emskin → Emacs
@@ -129,17 +109,6 @@ pub enum OutgoingMessage {
     /// A workspace was destroyed (Emacs frame closed).
     WorkspaceDestroyed {
         workspace_id: u64,
-    },
-    /// A screen recording finished. `reason` is `"user"` (Emacs stopped
-    /// via `emskin-toggle-record`), `"resize"` (framebuffer size changed
-    /// mid-recording), `"encoder_error"` (ffmpeg died), or `"replaced"`
-    /// (a new recording request pre-empted this one). Emacs should clear
-    /// `emskin-record` regardless of which.
-    RecordingStopped {
-        path: String,
-        frames_written: u64,
-        duration_secs: f64,
-        reason: String,
     },
 }
 

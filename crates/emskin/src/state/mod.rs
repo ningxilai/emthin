@@ -233,9 +233,6 @@ pub struct EmskinState {
     /// not cover.  When true the next Redraw calls render_frame; cleared after.
     pub needs_redraw: bool,
 
-    /// Screenshot / screen-record state machine. Driven by IPC
-    /// (`TakeScreenshot { path }`) and consumed by the winit render loop.
-    pub recorder: crate::recording::Recorder,
 
     /// Bridge to the child `emskin-dbus-proxy` process that rewrites IME
     /// cursor-position calls for embedded apps. Populated in `main.rs`
@@ -355,7 +352,6 @@ impl EmskinState {
             ime,
             cursor: cursor::CursorState::default(),
             needs_redraw: true,
-            recorder: crate::recording::Recorder::new(),
             dbus: dbus::DbusBridge::default(),
         })
     }
