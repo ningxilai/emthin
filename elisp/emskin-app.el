@@ -53,6 +53,8 @@
       (emskin--on-workspace-switched (gethash "workspace_id" msg)))
      ((string= type "workspace_destroyed")
       (emskin--on-workspace-destroyed (gethash "workspace_id" msg)))
+     ((string= type "x_wayland_ready")
+      nil)                              ; compositor-side notification, no action needed
      (t
       (message "emskin: unknown message type %s" type)))))
 

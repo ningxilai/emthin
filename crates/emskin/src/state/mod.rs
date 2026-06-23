@@ -212,10 +212,6 @@ pub struct EmskinState {
     /// toplevel populates via `xdg_toplevel.set_fullscreen` etc.
     pub emacs: emacs::EmacsState,
 
-    /// Handle to the spawned emskin-bar process (None = `--bar=none` or the
-    /// binary couldn't be located). Kept alive so it's reaped on shutdown.
-    pub bar_child: Option<std::process::Child>,
-
     /// Path to extracted elisp dir (for cleanup on exit).
     pub elisp_dir: Option<std::path::PathBuf>,
 
@@ -353,7 +349,6 @@ impl EmskinState {
             emacs: emacs::EmacsState::new(
                 std::env::var_os("EMSKIN_DISABLE_EMACS_DETECTION").is_none(),
             ),
-            bar_child: None,
             elisp_dir: None,
             selection: SelectionState::default(),
             focus: FocusState::default(),

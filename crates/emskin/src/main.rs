@@ -62,13 +62,6 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
-    /// How to launch the external workspace bar:
-    ///   * `auto`  — find `emskin-bar` next to this binary or on PATH (default)
-    ///   * `none`  — don't launch a bar (user manages their own / doesn't want one)
-    ///   * `<path>` — launch the binary at an explicit path (e.g. waybar)
-    #[arg(long, default_value = "auto")]
-    bar: String,
-
     /// Write tracing logs to this file instead of stderr.
     /// Useful for E2E tests that want clean test output but preserved
     /// diagnostics on failure.
@@ -188,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bind the in-process DBus broker before any child processes; its
     // listen socket must exist by the time `inject_env` stamps
-    // `DBUS_SESSION_BUS_ADDRESS` on `spawn_child` / `spawn_bar`. A
+    // `DBUS_SESSION_BUS_ADDRESS` on `spawn_child`. A
     // missing or unparseable upstream bus downgrades the bridge to an
     // inert state — embedded IME popups then land wherever they always
     // did (no regression vs. pre-broker behavior).
@@ -254,19 +247,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Launch the external workspace bar (if configured). Done after the
     // Wayland socket exists so the child inherits WAYLAND_DISPLAY via the
     // parent environment.
-    spawn_bar(&cli.bar, &mut state);
-
     event_loop.run(None, &mut state, emskin::tick::event_loop_tick)?;
 
     // Clean up Emacs child process
     if let Some(mut child) = state.emacs.take_child() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    // Bar child: we originally hoped the Wayland socket close (on state
-    // drop) would make the bar exit on its own, but state is still alive
-    // here — wait() would deadlock. Kill explicitly, same as Emacs.
-    if let Some(mut child) = state.bar_child.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -563,71 +547,6 @@ fn spawn_child(
 /// the AUR package layout and the dev target dir), then falls back to PATH.
 /// `none` skips entirely. Any other value is treated as an explicit path —
 /// useful for wiring in a third-party bar like waybar.
-fn spawn_bar(mode: &str, state: &mut EmskinState) {
-    let binary: std::path::PathBuf = match mode {
-        "none" => {
-            tracing::info!("--bar=none: not launching a workspace bar");
-            return;
-        }
-        "auto" => match locate_bar_binary() {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    "--bar=auto: emskin-bar not found next to emskin or on PATH; \
-                     continuing without a workspace bar"
-                );
-                return;
-            }
-        },
-        explicit => std::path::PathBuf::from(explicit),
-    };
-
-    // The bar must connect to *our* Wayland socket, not the host compositor's
-    // — otherwise it'd fail to bind ext-workspace-v1 / wlr-layer-shell and
-    // die immediately. `socket_name` is the name emskin advertised in
-    // XDG_RUNTIME_DIR.
-    let Some(socket_name) = state.socket_name.to_str() else {
-        tracing::error!("Wayland socket name is not valid UTF-8, cannot spawn bar");
-        return;
-    };
-
-    tracing::info!(
-        "Spawning workspace bar: {} (WAYLAND_DISPLAY={socket_name})",
-        binary.display(),
-    );
-    let mut cmd = std::process::Command::new(&binary);
-    cmd.env("WAYLAND_DISPLAY", socket_name);
-    state.dbus.inject_env(&mut cmd);
-    match cmd.spawn() {
-        Ok(child) => state.bar_child = Some(child),
-        Err(e) => {
-            tracing::warn!("Failed to spawn bar {}: {e}", binary.display());
-        }
-    }
-}
-
-/// Locate `emskin-bar`: prefer the sibling binary next to the current
-/// executable, then fall back to whatever `which` finds on `PATH`.
-fn locate_bar_binary() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("emskin-bar");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    // PATH lookup. std has no helper — iterate manually.
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join("emskin-bar");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 fn runtime_dir() -> String {
     std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string())
 }
