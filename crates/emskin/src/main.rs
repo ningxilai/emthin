@@ -6,7 +6,6 @@ use emskin::{ipc, state, EmskinState};
 use emskin_clipboard::{BackendHint, ClipboardBackend};
 
 static ELISP_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../elisp");
-static DEMO_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../demo");
 
 /// Nested Wayland compositor for Emacs Application Framework.
 #[derive(Parser, Debug)]
@@ -499,10 +498,6 @@ fn spawn_child(
             full_args.push("emskin".to_string());
             state.elisp_dir = Some(elisp_dir);
         }
-        // `emskin-demo-dir` defaults to `../demo` relative to the loaded
-        // emskin.el, so demo scripts must sit alongside the extracted
-        // elisp dir: $XDG_RUNTIME_DIR/emskin-<pid>/{elisp,demo}/.
-        extract_embedded(&DEMO_DIR, "demo");
     }
 
     full_args.extend_from_slice(args);
