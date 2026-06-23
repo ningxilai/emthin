@@ -120,8 +120,7 @@ The only edge case: if you separately cloned emskin and added `(require 'emskin)
 Inside Emacs running in emskin:
 
 ```
-M-x emskin-open-native-app RET firefox
-M-x emskin-open-native-app RET foot
+M-x emskin-open-app RET
 ```
 
 The app embeds into the current Emacs window and receives keyboard focus.

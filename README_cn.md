@@ -117,11 +117,10 @@ emskin --standalone
 在 emskin 内的 Emacs 中：
 
 ```
-M-x emskin-open-native-app RET firefox
-M-x emskin-open-native-app RET foot
+M-x emskin-open-app RET
 ```
 
-程序会自动嵌入当前 Emacs 窗口，并获得键盘焦点。
+选择后自动嵌入当前 Emacs 窗口，并获得键盘焦点。
 
 ### 键盘交互
 

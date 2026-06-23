@@ -5,13 +5,6 @@
 (require 'cl-lib)
 
 ;; ---------------------------------------------------------------------------
-;; Connection settings
-;; ---------------------------------------------------------------------------
-
-(defvar emskin-ipc-path nil
-  "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
-
-;; ---------------------------------------------------------------------------
 ;; Shared internal state
 ;; ---------------------------------------------------------------------------
 
@@ -48,13 +41,6 @@ Key: window-id.  Value: (SOURCE-WIN . ((VIEW-ID . EMACS-WIN) ...)).")
 (defvar emskin--next-view-id 0
   "Counter for generating unique mirror view IDs.")
 
-(defvar emskin--pending-native-app-targets nil
-  "FIFO queue of windows reserved for newly created native app buffers.
-Each `emskin-open-native-app' call appends the currently selected window.
-When the compositor later emits `window_created', emskin tries to display
-the new app buffer in the oldest still-live queued window before falling
-back to the generic `display-buffer' path.")
-
 ;; --- Workspace tracking ---
 (defvar emskin--frame-workspace-table (make-hash-table :test 'eq)
   "Maps Emacs frame objects to compositor workspace IDs.")
@@ -72,66 +58,11 @@ back to the generic `display-buffer' path.")
 ;; Load sub-modules
 ;; ---------------------------------------------------------------------------
 
+(require 'emskin-connect)
 (require 'emskin-ipc)
 (require 'emskin-app)
 (require 'emskin-workspace)
-
-;; ---------------------------------------------------------------------------
-;; Config sync
-;; ---------------------------------------------------------------------------
-
-(defun emskin-apply-config ()
-  "Re-sync state with the compositor after `setq' changes."
-  (interactive)
-  (unless emskin--process
-    (user-error "emskin: not connected"))
-  (run-hooks 'emskin-connected-hook)
-  (message "emskin: config applied"))
-
-;; ---------------------------------------------------------------------------
-;; App launching
-;; ---------------------------------------------------------------------------
-
-(defun emskin--take-native-app-target-window ()
-  "Return and dequeue the next live target window for a native app."
-  (let (target)
-    (while (and emskin--pending-native-app-targets
-                (not (window-live-p target)))
-      (setq target (pop emskin--pending-native-app-targets)))
-    (when (window-live-p target)
-      target)))
-
-(defun emskin-open-native-app (command)
-  "Launch a native Wayland application inside emskin.
-COMMAND is a shell command string, e.g. \"foot\" or \"firefox\"."
-  (interactive "sCommand: ")
-  (let* ((args (split-string-and-unquote command))
-         (target (selected-window))
-         (old-targets emskin--pending-native-app-targets))
-    (setq emskin--pending-native-app-targets
-          (append emskin--pending-native-app-targets (list target)))
-    (condition-case err
-        (progn
-          (apply #'start-process
-                 (format "emskin-%s" (car args))
-                 nil args)
-          (message "emskin: launched native app: %s" command))
-      (error
-       (setq emskin--pending-native-app-targets old-targets)
-       (signal (car err) (cdr err))))))
-
-;; ---------------------------------------------------------------------------
-;; Auto-connect when running inside emskin
-;; ---------------------------------------------------------------------------
-
-(defun emskin-maybe-auto-connect ()
-  "Connect to emskin IPC if we appear to be running inside emskin.
-Checks for the emskin-specific socket file derived from our parent PID."
-  (let ((path (emskin--ipc-path)))
-    (when (file-exists-p path)
-      (run-with-timer 0.5 nil #'emskin-connect))))
-
-(add-hook 'emacs-startup-hook #'emskin-maybe-auto-connect)
+(require 'emskin-launch)
 
 (provide 'emskin)
 ;;; emskin.el ends here

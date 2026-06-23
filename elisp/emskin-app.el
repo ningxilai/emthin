@@ -90,7 +90,7 @@
       ;; IME-state-only cleanup without bouncing focus back to the
       ;; now-hidden embedded app.
       (add-hook 'post-command-hook #'emskin--post-command-prefix-done nil t))
-    (let ((target (emskin--take-native-app-target-window)))
+    (let ((target (emskin--take-app-target-window)))
       (if target
           (set-window-buffer target buf)
         (display-buffer buf '((display-buffer-pop-up-window
@@ -214,47 +214,28 @@ Covers the body area (excludes fringes, margins, header-line, mode-line)."
          (h (- (nth 3 body) raw-y)))
     (list x y w h)))
 
-(defun emskin-debug-geometry ()
-  "Print geometry debug info to *Messages*."
-  (interactive)
-  (let* ((frame (selected-frame))
-         (geom (frame-geometry frame))
-         (win (selected-window))
-         (root-edges (window-pixel-edges (frame-root-window frame)))
-         (mb-h (or (cdr (alist-get 'menu-bar-size geom)) 0))
-         (tb-h (or (cdr (alist-get 'tool-bar-size geom)) 0))
-         (mb-ext (alist-get 'menu-bar-external geom))
-         (tb-ext (alist-get 'tool-bar-external geom))
-         (outer-h (cdr (alist-get 'outer-size geom)))
-         (pixel-h (frame-pixel-height frame))
-         (inner-h (frame-inner-height frame))
-         (mb-lines (frame-parameter frame 'menu-bar-lines))
-         (offset (emskin--frame-header-offset frame))
-         (final (emskin--window-geometry win)))
-    (message (concat "emskin-debug: "
-                     "mb: h=%d ext=%s lines=%s | "
-                     "tb: h=%d ext=%s | "
-                     "outer-h=%s pixel-h=%d inner-h=%d | "
-                     "root-edges: %s | "
-                     "offset: %d | final: %s")
-             mb-h mb-ext mb-lines
-             tb-h tb-ext
-             outer-h pixel-h inner-h
-             root-edges offset final)))
 
 (defun emskin--report-geometry (window-id window)
-  "Send set_geometry for WINDOW-ID, only when geometry actually changed."
-  (let ((geo (emskin--window-geometry window)))
-    (unless (equal geo (buffer-local-value 'emskin--last-geometry
-                                           (window-buffer window)))
-      (with-current-buffer (window-buffer window)
-        (setq-local emskin--last-geometry geo))
-      (emskin--send `((type . "set_geometry")
-                      (window_id . ,window-id)
-                      (x . ,(nth 0 geo))
-                      (y . ,(nth 1 geo))
-                      (w . ,(nth 2 geo))
-                      (h . ,(nth 3 geo)))))))
+  "Send set_geometry for WINDOW-ID, logging geometry to *Messages*."
+  (condition-case err
+      (let* ((frame (selected-frame))
+             (geom (frame-geometry frame))
+             (mb-h (or (cdr (alist-get 'menu-bar-size geom)) 0))
+             (tb-h (or (cdr (alist-get 'tool-bar-size geom)) 0))
+             (geo (emskin--window-geometry window)))
+        (message "emskin: window %s geo=%s mb=%s tb=%s" window-id geo mb-h tb-h)
+        (unless (equal geo (buffer-local-value 'emskin--last-geometry
+                                               (window-buffer window)))
+          (with-current-buffer (window-buffer window)
+            (setq-local emskin--last-geometry geo))
+          (emskin--send `((type . "set_geometry")
+                          (window_id . ,window-id)
+                          (x . ,(nth 0 geo))
+                          (y . ,(nth 1 geo))
+                          (w . ,(nth 2 geo))
+                          (h . ,(nth 3 geo))))))
+    (error
+     (message "emskin: geometry error for window %s: %s" window-id err))))
 
 (defun emskin--alloc-view-id ()
   "Allocate a unique mirror view ID."
