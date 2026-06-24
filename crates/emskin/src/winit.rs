@@ -15,11 +15,11 @@ use smithay::{
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
+    desktop::{space::render_output, Window},
     input::{
         keyboard::FilterResult,
         pointer::{CursorImageStatus, CursorImageSurfaceData},
     },
-    desktop::{space::render_output, Window},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Physical, Rectangle, Size, Transform, SERIAL_COUNTER},
@@ -215,7 +215,6 @@ fn render_frame(
             tracing::error!("render_output failed: {e}");
             return;
         }
-
     }
 
     if let Err(e) = backend.submit(Some(&[damage])) {

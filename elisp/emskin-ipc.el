@@ -9,6 +9,9 @@
 (defvar emskin--jsonrpc-conn nil
   "JSON-RPC connection to emskin compositor.")
 
+(defvar emskin--process nil
+  "Non-nil while the IPC connection is active.")
+
 (defvar emskin-ipc-path nil
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
 
@@ -23,22 +26,36 @@
   "Hook run after the IPC connection to emskin is (re-)established.")
 
 ;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(defun emskin--kebab->snake (sym)
+  "Convert SYM from kebab-case to snake_case.
+E.g., `set-focus' → `set_focus'.  No-op if already snake_case."
+  (let ((name (symbol-name sym)))
+    (if (string-search "-" name)
+        (intern (string-replace "-" "_" name))
+      sym)))
+
+;; ---------------------------------------------------------------------------
 ;; Sending
 ;; ---------------------------------------------------------------------------
 
 (defun emskin--send (method params)
   "Send JSON-RPC notification METHOD with PARAMS.
-PARAMS is a plist suitable for `json-serialize'."
+METHOD is a kebab-case or snake_case symbol (kebab converted
+to snake for the wire format).  PARAMS is a plist suitable for
+`json-serialize'."
   (when emskin--jsonrpc-conn
-    (jsonrpc-notify emskin--jsonrpc-conn method params)))
+    (jsonrpc-notify emskin--jsonrpc-conn
+                     (emskin--kebab->snake method) params)))
 
 (defun emskin--send-thunk (method params)
   "Return thunk that sends METHOD+PARAMS when called.
-Encoding happens at thunk-creation time; network write happens
-when the thunk is called."
-  (let ((conn emskin--jsonrpc-conn))
+Conversion and network write happen when the thunk is called."
+  (let ((m method) (p params))
     (lambda ()
-      (when conn (jsonrpc-notify conn method params)))))
+      (emskin--send m p))))
 
 ;; ---------------------------------------------------------------------------
 ;; Socket discovery
@@ -67,7 +84,8 @@ when the thunk is called."
   ;; Clean up stale connection
   (when emskin--jsonrpc-conn
     (jsonrpc-shutdown emskin--jsonrpc-conn)
-    (setq emskin--jsonrpc-conn nil))
+    (setq emskin--jsonrpc-conn nil
+          emskin--process nil))
   (let* ((path (emskin--ipc-path))
          (proc (condition-case err
                    (make-network-process
@@ -86,7 +104,9 @@ when the thunk is called."
              :on-shutdown
              (lambda (_c)
                (message "emskin: IPC disconnected")
-               (setq emskin--jsonrpc-conn nil))))
+               (setq emskin--jsonrpc-conn nil
+                     emskin--process nil))))
+      (setq emskin--process t)
       (message "emskin: connecting to %s" path))))
 
 (defun emskin--dispatch-notification (_conn method params)

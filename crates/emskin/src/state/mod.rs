@@ -233,7 +233,6 @@ pub struct EmskinState {
     /// not cover.  When true the next Redraw calls render_frame; cleared after.
     pub needs_redraw: bool,
 
-
     /// Bridge to the child `emskin-dbus-proxy` process that rewrites IME
     /// cursor-position calls for embedded apps. Populated in `main.rs`
     /// after `init_winit`; stays [`DbusBridge::default`] (inert) if the

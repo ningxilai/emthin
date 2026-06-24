@@ -408,7 +408,12 @@ pub fn wants_floating(_state: &EmskinState, surface: &ToplevelSurface) -> bool {
 /// Strips " - GNU Emacs ..." suffix.
 /// e.g. "*scratch* - GNU Emacs at home" → "*scratch*"
 fn extract_bar_name(title: &str) -> String {
-    title.split(" - GNU Emacs").next().unwrap_or(title).trim().to_string()
+    title
+        .split(" - GNU Emacs")
+        .next()
+        .unwrap_or(title)
+        .trim()
+        .to_string()
 }
 
 // Xdg Shell

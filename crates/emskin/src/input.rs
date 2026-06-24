@@ -401,5 +401,3 @@ impl EmskinState {
         keyboard.set_focus(self, Some(saved), serial);
     }
 }
-
-

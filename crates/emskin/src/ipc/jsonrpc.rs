@@ -2,13 +2,14 @@ use crate::ipc::{IncomingMessage, OutgoingMessage};
 
 /// Parse a JSON-RPC 2.0 notification payload into an `IncomingMessage`.
 pub fn parse_incoming(payload: &[u8]) -> Result<IncomingMessage, String> {
-    let v: serde_json::Value = serde_json::from_slice(payload)
-        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(payload).map_err(|e| format!("JSON parse error: {e}"))?;
     let jsonrpc = v.get("jsonrpc").and_then(|v| v.as_str()).unwrap_or("");
     if jsonrpc != "2.0" {
         return Err(format!("invalid jsonrpc version: {jsonrpc:?}"));
     }
-    let method = v["method"].as_str()
+    let method = v["method"]
+        .as_str()
         .ok_or_else(|| "missing 'method' field".to_string())?;
     let params = v.get("params").unwrap_or(&serde_json::Value::Null);
     IncomingMessage::from_jsonrpc(method, params)
@@ -45,7 +46,18 @@ mod tests {
     fn parse_set_geometry() {
         let wire = br#"{"jsonrpc":"2.0","method":"set_geometry","params":{"window_id":42,"x":10,"y":20,"w":800,"h":600}}"#;
         let msg = parse_incoming(wire).unwrap();
-        assert!(matches!(msg, IncomingMessage::SetGeometry { window_id: 42, rect: IpcRect { x: 10, y: 20, w: 800, h: 600 }}));
+        assert!(matches!(
+            msg,
+            IncomingMessage::SetGeometry {
+                window_id: 42,
+                rect: IpcRect {
+                    x: 10,
+                    y: 20,
+                    w: 800,
+                    h: 600
+                }
+            }
+        ));
     }
 
     #[test]

@@ -106,44 +106,22 @@ back to the generic `display-buffer' path.")
 ;; IPC call helpers
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--symbol->snake (sym)
-  "Convert SYM name to snake_case string.
-E.g. `set-focus' -> \"set_focus\", `prefix-clear' -> \"prefix_clear\"."
-  (replace-regexp-in-string "-" "_" (symbol-name sym)))
-
 (defmacro emskin--call (method &rest plist)
   "Send a METHOD notification with alternating keyword-value PLIST.
-Each keyword is converted to a JSON field name by stripping the `:'
-prefix.  Example:
+METHOD is a kebab-case or snake_case symbol.  Example:
 
     (emskin--call set-focus :window_id 42)
 
 expands to
 
-    (emskin--send (cons \\='(type . \"set_focus\")
-                       (list (cons \"window_id\" 42))))"
+    (emskin--send \\='set-focus (list :window_id 42))"
   (declare (indent 1))
-  (let (pairs)
-    (while plist
-      (push `(cons ,(substring (symbol-name (pop plist)) 1) ,(pop plist)) pairs))
-    `(emskin--send
-      (cons '(type . ,(emskin--symbol->snake method))
-            (list ,@(nreverse pairs))))))
-
-(defun emskin--send-dynamic (method &rest alist-pairs)
-  "Send METHOD (string) notification with ALIST-PAIRS.
-Use when the method name is not known at compile time.
-Alist pairs are literal cons cells, e.g. `(cons \"window_id\" 42)."
-  (emskin--send `((type . ,method) ,@alist-pairs)))
+  `(emskin--send ',method (list ,@plist)))
 
 (defun emskin--call* (method &rest plist)
   "Runtime version of `emskin--call' macro.
 Send a METHOD notification with alternating keyword-value PLIST."
-  (let (pairs)
-    (while plist
-      (push (cons (substring (symbol-name (pop plist)) 1) (pop plist)) pairs))
-    (emskin--send (cons (cons 'type (emskin--symbol->snake method))
-                        (nreverse pairs)))))
+  (emskin--send method plist))
 
 (defun emskin--exec-effects (thunks)
   "Execute each thunk in THUNKS list sequentially."
@@ -153,42 +131,42 @@ Send a METHOD notification with alternating keyword-value PLIST."
 ;; Message dispatch
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--dispatch (msg)
-  "Dispatch a parsed MSG hash-table from emskin."
-  (let ((type (gethash "type" msg "")))
-    (cond
-     ((string= type "connected")
-      (message "emskin: connected (version %s)" (gethash "version" msg "?"))
-      (setq emskin--active-workspace-id 1)
-      (emskin--map-frame-to-workspace (selected-frame) 1)
-      (run-hooks 'emskin-connected-hook))
-     ((string= type "error")
-      (message "emskin error: %s" (gethash "msg" msg "")))
-     ((string= type "window_created")
-      (emskin--on-window-created (gethash "window_id" msg)
-                                  (gethash "title" msg "")))
-     ((string= type "window_destroyed")
-      (emskin--on-window-destroyed (gethash "window_id" msg)))
-     ((string= type "title_changed")
-      (emskin--on-title-changed (gethash "window_id" msg)
-                                 (gethash "title" msg "")))
-     ((string= type "focus_view")
-      (emskin--on-focus-view (gethash "window_id" msg)
-                                 (gethash "view_id" msg)))
-     ((string= type "surface_size")
-      (let* ((w (gethash "width" msg))
-             (h (gethash "height" msg))
-             (frame-h (frame-pixel-height))
-             (offset (or emskin--header-offset
-                         (max 0 (- h frame-h)))))
-        (setq emskin--header-offset offset)
-        (message "emskin: surface=%sx%s bars=%dpx" w h offset)
-        (dolist (frame (frame-list))
-          (emskin--sync-frame frame))))
-     ((string= type "x_wayland_ready")
-      nil)
-     (t
-      (message "emskin: unknown message type %s" type)))))
+(defun emskin--dispatch (method params)
+  "Dispatch a parsed METHOD with PARAMS plist from emskin."
+  (pcase method
+    ('connected
+     (message "emskin: connected (version %s)"
+              (or (plist-get params :version) "?"))
+     (setq emskin--active-workspace-id 1)
+     (emskin--map-frame-to-workspace (selected-frame) 1)
+     (run-hooks 'emskin-connected-hook))
+    ('error
+     (message "emskin error: %s" (plist-get params :msg)))
+    ('window_created
+     (emskin--on-window-created (plist-get params :window_id)
+                                 (or (plist-get params :title) "")))
+    ('window_destroyed
+     (emskin--on-window-destroyed (plist-get params :window_id)))
+    ('title_changed
+     (emskin--on-title-changed (plist-get params :window_id)
+                                (or (plist-get params :title) "")))
+    ('focus_view
+     (emskin--on-focus-view (plist-get params :window_id)
+                             (plist-get params :view_id)))
+    ('surface_size
+     (let* ((w (plist-get params :width))
+            (h (plist-get params :height))
+            (frame-h (frame-pixel-height))
+            (offset (or emskin--header-offset
+                        (max 0 (- h frame-h)))))
+       (setq emskin--header-offset offset)
+       (message "emskin: surface=%sx%s bars=%dpx" w h offset)
+       (dolist (frame (frame-list))
+         (emskin--sync-frame frame))))
+    ('x_wayland_ready
+     nil)
+    (_
+     (message "emskin: unknown message type %s" method))))
 
 (add-hook 'emskin--message-hook #'emskin--dispatch)
 
@@ -391,14 +369,12 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
 
 (defun emskin--send-mirror-geometry* (wid view-id win msg-type)
   "Send mirror geometry IPC (utility, callable from thunks)."
-  (let ((geo (emskin--window-geometry win)))
-    (emskin--send-dynamic msg-type
-      (cons "window_id" wid)
-      (cons "view_id" view-id)
-      (cons "x" (emskin--rect-x geo))
-      (cons "y" (emskin--rect-y geo))
-      (cons "w" (emskin--rect-w geo))
-      (cons "h" (emskin--rect-h geo)))))
+  (let ((geo (emskin--window-geometry win))
+        (method (intern msg-type)))
+    (emskin--call* method
+      :window_id wid :view_id view-id
+      :x (emskin--rect-x geo) :y (emskin--rect-y geo)
+      :w (emskin--rect-w geo) :h (emskin--rect-h geo))))
 
 (defun emskin--mirror-thunks (wid diff)
   "Return list of effect thunks for mirror DIFF plist of WID."

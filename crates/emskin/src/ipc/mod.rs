@@ -43,7 +43,9 @@ impl IpcServer {
                     Ok(mut conn) => {
                         tracing::info!("Emacs IPC connected");
                         // Send handshake + any buffered messages.
-                        if let Ok(json) = jsonrpc::serialize_outgoing(OutgoingMessage::Connected { version: "0.1" }) {
+                        if let Ok(json) = jsonrpc::serialize_outgoing(OutgoingMessage::Connected {
+                            version: "0.1",
+                        }) {
                             conn.enqueue_raw(&json);
                         }
                         for msg in self.pending.drain(..) {
@@ -82,7 +84,10 @@ impl IpcServer {
         };
         let json = match jsonrpc::serialize_outgoing(msg) {
             Ok(j) => j,
-            Err(e) => { tracing::error!("IPC serialize error: {e}"); return; }
+            Err(e) => {
+                tracing::error!("IPC serialize error: {e}");
+                return;
+            }
         };
         conn.enqueue_raw(&json);
         if let Err(e) = conn.try_flush() {

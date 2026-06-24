@@ -247,7 +247,12 @@ mod tests {
             msg,
             IncomingMessage::SetGeometry {
                 window_id: 42,
-                rect: IpcRect { x: 10, y: 20, w: 800, h: 600 }
+                rect: IpcRect {
+                    x: 10,
+                    y: 20,
+                    w: 800,
+                    h: 600
+                }
             }
         ));
     }
@@ -274,8 +279,7 @@ mod tests {
 
     #[test]
     fn parses_prefix_done() {
-        let msg =
-            IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
+        let msg = IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
         assert!(matches!(msg, IncomingMessage::PrefixDone));
     }
 
@@ -322,8 +326,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_method() {
-        let result =
-            IncomingMessage::from_jsonrpc("unknown_command", &serde_json::json!({}));
+        let result = IncomingMessage::from_jsonrpc("unknown_command", &serde_json::json!({}));
         assert!(result.is_err());
     }
 

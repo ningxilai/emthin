@@ -188,5 +188,3 @@ fn inspect_toplevel_for_log(
         max,
     }
 }
-
-

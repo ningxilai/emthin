@@ -20,16 +20,15 @@
 ;; IPC message handler (registered on emskin--message-hook)
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--handle-workspace-message (msg)
+(defun emskin--handle-workspace-message (method params)
   "Dispatch workspace-related IPC messages from emskin."
-  (let ((type (gethash "type" msg "")))
-    (cond
-     ((string= type "workspace_created")
-      (emskin--on-workspace-created (gethash "workspace_id" msg)))
-     ((string= type "workspace_switched")
-      (emskin--on-workspace-switched (gethash "workspace_id" msg)))
-     ((string= type "workspace_destroyed")
-      (emskin--on-workspace-destroyed (gethash "workspace_id" msg))))))
+  (pcase method
+    ('workspace_created
+     (emskin--on-workspace-created (plist-get params :workspace_id)))
+    ('workspace_switched
+     (emskin--on-workspace-switched (plist-get params :workspace_id)))
+    ('workspace_destroyed
+     (emskin--on-workspace-destroyed (plist-get params :workspace_id)))))
 
 (add-hook 'emskin--message-hook #'emskin--handle-workspace-message)
 

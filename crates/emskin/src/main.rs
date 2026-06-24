@@ -523,6 +523,3 @@ fn register_clipboard_source(
         .map_err(|e| format!("failed to register clipboard source: {e}"))?;
     Ok(())
 }
-
-
-
