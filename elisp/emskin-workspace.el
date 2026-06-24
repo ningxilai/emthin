@@ -46,30 +46,25 @@
           (emskin--sync-frame frame)))
     (emskin--map-frame-to-workspace (selected-frame) workspace-id)))
 
-(defun emskin--suppress-workspace-switch-thunks (&optional seconds)
-  "Return list of thunks to suppress workspace switch for SECONDS."
-  (let ((delay (or seconds 0.3))
-        (current-timer emskin--workspace-switch-timer))
-    (list
-     (lambda () (setq emskin--workspace-switch-suppressed t))
-     (lambda ()
-       (when (timerp current-timer)
-         (cancel-timer current-timer)))
-     (lambda ()
-       (setq emskin--workspace-switch-timer
-             (run-with-timer delay nil
-               (lambda ()
-                 (setq emskin--workspace-switch-suppressed nil)
-                 (setq emskin--workspace-switch-timer nil))))))))
+(defun emskin--suppress-workspace-switch (&optional seconds)
+  "Suppress `emskin--after-focus-change' for SECONDS (default 0.3)."
+  (let ((delay (or seconds 0.3)))
+    (setq emskin--workspace-switch-suppressed t)
+    (when (timerp emskin--workspace-switch-timer)
+      (cancel-timer emskin--workspace-switch-timer))
+    (setq emskin--workspace-switch-timer
+          (run-with-timer delay nil
+            (lambda ()
+              (setq emskin--workspace-switch-suppressed nil
+                    emskin--workspace-switch-timer nil))))))
 
 (defun emskin--on-workspace-switched (workspace-id)
   "Update active workspace tracking and re-sync geometry."
-  (emskin--exec-effects
-   (append (list (lambda () (setq emskin--active-workspace-id workspace-id))
-                 (lambda () (setq emskin--last-focused-wid 'unset))
-                 (lambda () (emskin--resync-workspace)))
-           (emskin--suppress-workspace-switch-thunks 0.3)
-           (or (emskin--sync-focus-thunks (selected-window)) nil))))
+  (setq emskin--active-workspace-id workspace-id)
+  (setq emskin--last-focused-wid 'unset)
+  (emskin--resync-workspace)
+  (emskin--suppress-workspace-switch 0.3)
+  (emskin--sync-focus (selected-window)))
 
 (defun emskin--on-workspace-destroyed (workspace-id)
   "Clean up frame-workspace mapping for destroyed workspace."
@@ -127,12 +122,9 @@ Uses the reverse mapping table for O(1) lookup."
     (let* ((frame (selected-frame))
            (ws-id (gethash frame emskin--frame-workspace-table)))
       (when (and ws-id
-                 (not (eql ws-id emskin--active-workspace-id)))
-        (emskin--exec-effects
-         (append (emskin--suppress-workspace-switch-thunks 0.2)
-                 (list (lambda ()
-                         (emskin--call* 'switch-workspace
-                                        :workspace_id ws-id)))))))))
+                  (not (eql ws-id emskin--active-workspace-id)))
+        (emskin--suppress-workspace-switch 0.2)
+        (emskin--call* 'switch-workspace :workspace_id ws-id)))))
 
 ;; ---------------------------------------------------------------------------
 ;; other-frame advice
@@ -144,20 +136,16 @@ Suppresses `emskin--after-focus-change' before delegating to the
 original, then sends `switch-workspace' based on the actual target
 frame — no repeated frame-cycle logic."
   (when emskin--process
-    (emskin--exec-effects
-     (list (lambda () (setq emskin--workspace-switch-suppressed t)))))
+    (setq emskin--workspace-switch-suppressed t))
   (unwind-protect
       (apply orig-fn arg args)
     (when emskin--process
       (let* ((frame (selected-frame))
              (ws-id (gethash frame emskin--frame-workspace-table)))
-        (emskin--exec-effects
-         (append (emskin--suppress-workspace-switch-thunks 0.2)
-                 (when (and ws-id
-                            (not (eql ws-id emskin--active-workspace-id)))
-                   (list (lambda ()
-                           (emskin--call* 'switch-workspace
-                                          :workspace_id ws-id))))))))))
+        (emskin--suppress-workspace-switch 0.2)
+        (when (and ws-id
+                   (not (eql ws-id emskin--active-workspace-id)))
+          (emskin--call* 'switch-workspace :workspace_id ws-id))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Register hooks and advice

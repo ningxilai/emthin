@@ -123,10 +123,6 @@ expands to
 Send a METHOD notification with alternating keyword-value PLIST."
   (emskin--send method plist))
 
-(defun emskin--exec-effects (thunks)
-  "Execute each thunk in THUNKS list sequentially."
-  (dolist (fn thunks) (funcall fn)))
-
 ;; ---------------------------------------------------------------------------
 ;; Message dispatch
 ;; ---------------------------------------------------------------------------
@@ -376,79 +372,50 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
       :x (emskin--rect-x geo) :y (emskin--rect-y geo)
       :w (emskin--rect-w geo) :h (emskin--rect-h geo))))
 
-(defun emskin--mirror-thunks (wid diff)
-  "Return list of effect thunks for mirror DIFF plist of WID."
+(defun emskin--sync-mirrors (wid diff)
+  "Apply mirror DIFF plist for WID synchronously."
   (let ((source-win (plist-get diff :source-win))
         (promote-vid (plist-get diff :promote-vid))
         (removals (plist-get diff :mirror-removals))
         (additions (plist-get diff :mirror-additions))
         (updates (plist-get diff :mirror-updates))
-        (new-mirrors (plist-get diff :new-mirrors))
-        thunks)
+        (new-mirrors (plist-get diff :new-mirrors)))
     (dolist (vid removals)
-      (let ((v vid))
-        (push (lambda () (emskin--call* 'remove-mirror :window_id wid :view_id v)) thunks)))
+      (emskin--call* 'remove-mirror :window_id wid :view_id vid))
     (when promote-vid
-      (push (lambda () (emskin--call* 'promote-mirror :window_id wid :view_id promote-vid)) thunks))
+      (emskin--call* 'promote-mirror :window_id wid :view_id promote-vid))
     (dolist (pair additions)
-      (let ((w (cdr pair)) (v (car pair)))
-        (push (lambda () (emskin--send-mirror-geometry* wid v w "add_mirror")) thunks)))
+      (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "add_mirror"))
     (dolist (pair updates)
-      (let ((w (cdr pair)) (v (car pair)))
-        (push (lambda () (emskin--send-mirror-geometry* wid v w "update_mirror_geometry")) thunks)))
+      (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "update_mirror_geometry"))
     (when source-win
-      (setq thunks (append (emskin--report-geometry-thunks wid source-win) thunks)))
+      (emskin--report-geometry wid source-win))
     (if source-win
-        (push (lambda () (puthash wid new-mirrors emskin--mirror-table)) thunks)
-      (push (lambda () (remhash wid emskin--mirror-table)) thunks))
-    (nreverse thunks)))
+        (puthash wid new-mirrors emskin--mirror-table)
+      (remhash wid emskin--mirror-table))))
 
-(defun emskin--report-geometry-thunks (window-id window)
-  "Return list of effect thunks for reporting WINDOW-ID geometry."
+(defun emskin--report-geometry (window-id window)
+  "Send set_geometry for WINDOW-ID if geometry changed."
   (condition-case err
       (let* ((geo (emskin--window-geometry window))
              (buf (window-buffer window))
              (old-geo (buffer-local-value 'emskin--last-geometry buf)))
-        (cons
-         (lambda ()
-           (message "emskin: window %s geo=%s" window-id geo))
-         (if (equal geo old-geo)
-             nil
-           (list
-            (lambda ()
-              (with-current-buffer buf
-                (setq emskin--last-geometry geo)))
-            (lambda ()
-              (emskin--call* 'set-geometry
-                :window_id window-id
-                :x (emskin--rect-x geo)
-                :y (emskin--rect-y geo)
-                :w (emskin--rect-w geo)
-                :h (emskin--rect-h geo)))))))
+        (message "emskin: window %s geo=%s" window-id geo)
+        (unless (equal geo old-geo)
+          (with-current-buffer buf
+            (setq emskin--last-geometry geo))
+          (emskin--call* 'set-geometry
+            :window_id window-id
+            :x (emskin--rect-x geo)
+            :y (emskin--rect-y geo)
+            :w (emskin--rect-w geo)
+            :h (emskin--rect-h geo))))
     (error
-     (list (lambda ()
-             (message "emskin: geometry error for window %s: %s" window-id err))))))
-
-(defun emskin--report-geometry (window-id window)
-  "Send set_geometry for WINDOW-ID (convenience wrapper)."
-  (emskin--exec-effects (emskin--report-geometry-thunks window-id window)))
+     (message "emskin: geometry error for window %s: %s" window-id err))))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-frame sync (geometry + visibility + mirrors)
 ;; ---------------------------------------------------------------------------
-
-(defun emskin--wid-wins-decoration-thunks (wid-wins)
-  "Return list of window-decoration thunks for WID-WINS hash table."
-  (let (thunks)
-    (maphash (lambda (_wid wins)
-               (dolist (win wins)
-                 (push (lambda ()
-                         (set-window-scroll-bars win 0 nil 0 nil)
-                         (set-window-fringes win 0 0)
-                         (set-window-margins win 0 0))
-                       thunks)))
-             wid-wins)
-    thunks))
 
 (defun emskin--sync-frame (frame)
   "Sync visibility, geometry, and mirrors for embedded app buffers in FRAME."
@@ -456,36 +423,38 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
     (let ((ws-id (gethash frame emskin--frame-workspace-table)))
       (when (eql ws-id emskin--active-workspace-id)
         (let ((wid-wins (emskin--wid-wins-data frame))
-              (next-view-id emskin--next-view-id)
-              thunks)
-          ;; Window decoration thunks
-          (setq thunks (emskin--wid-wins-decoration-thunks wid-wins))
-          ;; Per-buffer sync thunks
-          (dolist (buf (buffer-list))
-            (when-let* ((wid (buffer-local-value 'emskin--window-id buf)))
-              (let* ((wins (gethash wid wid-wins))
-                     (now-visible (and wins t))
-                     (was-visible (buffer-local-value 'emskin--visible buf))
-                     (prev-state (gethash wid emskin--mirror-table))
-                     (mirror-result (emskin--mirror-diff
-                                     wins (car prev-state) (cdr prev-state)
-                                     next-view-id)))
-                (setq next-view-id (cdr mirror-result))
-                (let ((diff (car mirror-result)))
+              (next-view-id emskin--next-view-id))
+          ;; 1. Window decorations
+          (ignore-errors
+            (maphash (lambda (_wid wins)
+                       (dolist (win wins)
+                         (set-window-scroll-bars win 0 nil 0 nil)
+                         (set-window-fringes win 0 0)
+                         (set-window-margins win 0 0)))
+                     wid-wins))
+          ;; 2. Per-buffer sync (visibility, geometry, mirrors)
+          (ignore-errors
+            (dolist (buf (buffer-list))
+              (when-let* ((wid (buffer-local-value 'emskin--window-id buf)))
+                (let* ((wins (gethash wid wid-wins))
+                       (now-visible (and wins t))
+                       (was-visible (buffer-local-value 'emskin--visible buf))
+                       (prev-state (gethash wid emskin--mirror-table))
+                       (mirror-result (emskin--mirror-diff
+                                       wins (car prev-state) (cdr prev-state)
+                                       next-view-id)))
+                  (setq next-view-id (cdr mirror-result))
+                  ;; Visibility
                   (unless (eq now-visible was-visible)
-                    (push (lambda ()
-                            (with-current-buffer buf
-                               (setq emskin--visible now-visible)))
-                          thunks)
-                    (push (lambda ()
-                            (emskin--call* 'set-visibility
-                              :window_id wid
-                              :visible (if now-visible t :json-false)))
-                          thunks))
-                  (setq thunks (append (emskin--mirror-thunks wid diff) thunks)))))
-          ;; Save updated view-id counter
-          (push (lambda () (setq emskin--next-view-id next-view-id)) thunks)
-          (emskin--exec-effects (nreverse thunks))))))))
+                    (with-current-buffer buf
+                      (setq emskin--visible now-visible))
+                    (emskin--call* 'set-visibility
+                                   :window_id wid
+                                   :visible (if now-visible t :json-false)))
+                  ;; Mirrors
+                  (emskin--sync-mirrors wid (car mirror-result))))))
+          ;; 3. Save updated view-id counter
+          (setq emskin--next-view-id next-view-id))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Mirror promotion (interactive)
@@ -524,22 +493,16 @@ position; the old source window becomes a mirror in its place."
 ;; Focus sync
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--sync-focus-thunks (&optional _frame)
-  "Return list of thunks for focus sync, or nil if focus unchanged."
+(defun emskin--sync-focus (&optional _frame)
+  "Sync focus if the focused window's app changed."
   (when emskin--process
     (let ((wid (buffer-local-value 'emskin--window-id
                                     (window-buffer (selected-window)))))
       (unless (eq wid emskin--last-focused-wid)
-        (list
-         (lambda () (setq emskin--last-focused-wid wid))
-         (if wid
-             (lambda () (emskin--call* 'set-focus :window_id wid))
-           (lambda () (emskin--call* 'set-focus))))))))
-
-(defun emskin--sync-focus (&optional frame)
-  "Sync focus (convenience wrapper)."
-  (when-let* ((thunks (emskin--sync-focus-thunks frame)))
-    (emskin--exec-effects thunks)))
+        (setq emskin--last-focused-wid wid)
+        (if wid
+            (emskin--call* 'set-focus :window_id wid)
+          (emskin--call* 'set-focus))))))
 
 (add-hook 'window-selection-change-functions #'emskin--sync-focus)
 

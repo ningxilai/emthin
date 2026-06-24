@@ -50,13 +50,6 @@ to snake for the wire format).  PARAMS is a plist suitable for
     (jsonrpc-notify emskin--jsonrpc-conn
                      (emskin--kebab->snake method) params)))
 
-(defun emskin--send-thunk (method params)
-  "Return thunk that sends METHOD+PARAMS when called.
-Conversion and network write happen when the thunk is called."
-  (let ((m method) (p params))
-    (lambda ()
-      (emskin--send m p))))
-
 ;; ---------------------------------------------------------------------------
 ;; Socket discovery
 ;; ---------------------------------------------------------------------------
