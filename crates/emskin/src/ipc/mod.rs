@@ -43,12 +43,11 @@ impl IpcServer {
                     Ok(mut conn) => {
                         tracing::info!("Emacs IPC connected");
                         // Send handshake + any buffered messages.
-                        // TEMP: direct serde serialization until Task 4 wires jsonrpc.rs.
-                        if let Ok(json) = serde_json::to_vec(&OutgoingMessage::Connected { version: "0.1" }) {
+                        if let Ok(json) = jsonrpc::serialize_outgoing(OutgoingMessage::Connected { version: "0.1" }) {
                             conn.enqueue_raw(&json);
                         }
                         for msg in self.pending.drain(..) {
-                            if let Ok(json) = serde_json::to_vec(&msg) {
+                            if let Ok(json) = jsonrpc::serialize_outgoing(msg) {
                                 conn.enqueue_raw(&json);
                             }
                         }
@@ -81,8 +80,7 @@ impl IpcServer {
             self.pending.push(msg);
             return;
         };
-        // TEMP: direct serde serialization until Task 4 wires jsonrpc.rs.
-        let json = match serde_json::to_vec(&msg) {
+        let json = match jsonrpc::serialize_outgoing(msg) {
             Ok(j) => j,
             Err(e) => { tracing::error!("IPC serialize error: {e}"); return; }
         };
@@ -115,7 +113,7 @@ impl IpcServer {
         let mut msgs = Vec::new();
         loop {
             match conn.try_recv() {
-                Ok(Some(payload)) => match serde_json::from_slice::<IncomingMessage>(&payload) {
+                Ok(Some(payload)) => match jsonrpc::parse_incoming(&payload) {
                     Ok(msg) => msgs.push(msg),
                     Err(e) => {
                         tracing::warn!(
