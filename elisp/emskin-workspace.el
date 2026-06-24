@@ -13,6 +13,9 @@
 (defvar emskin--workspace-switch-suppressed nil
   "When non-nil, suppress workspace switch from after-focus-change.")
 
+(defvar emskin--workspace-switch-timer nil
+  "Single timer handle for workspace switch debounce.")
+
 ;; ---------------------------------------------------------------------------
 ;; IPC message handler (registered on emskin--message-hook)
 ;; ---------------------------------------------------------------------------
@@ -39,25 +42,41 @@
   (if emskin--pending-frame-queue
       (let ((frame (pop emskin--pending-frame-queue)))
         (when (frame-live-p frame)
-          (puthash frame workspace-id emskin--frame-workspace-table)
+          (emskin--map-frame-to-workspace frame workspace-id)
           (message "emskin: frame → workspace %d" workspace-id)
           (emskin--sync-frame frame)))
-    (puthash (selected-frame) workspace-id emskin--frame-workspace-table)))
+    (emskin--map-frame-to-workspace (selected-frame) workspace-id)))
+
+(defun emskin--suppress-workspace-switch-thunks (&optional seconds)
+  "Return list of thunks to suppress workspace switch for SECONDS."
+  (let ((delay (or seconds 0.3))
+        (current-timer emskin--workspace-switch-timer))
+    (list
+     (lambda () (setq emskin--workspace-switch-suppressed t))
+     (lambda ()
+       (when (timerp current-timer)
+         (cancel-timer current-timer)))
+     (lambda ()
+       (setq emskin--workspace-switch-timer
+             (run-with-timer delay nil
+               (lambda ()
+                 (setq emskin--workspace-switch-suppressed nil)
+                 (setq emskin--workspace-switch-timer nil))))))))
 
 (defun emskin--on-workspace-switched (workspace-id)
   "Update active workspace tracking and re-sync geometry."
-  (setq emskin--active-workspace-id workspace-id)
-  (setq emskin--workspace-switch-suppressed t)
-  (run-with-timer 0.3 nil (lambda () (setq emskin--workspace-switch-suppressed nil)))
-  (setq emskin--last-focused-wid 'unset)
-  (emskin--resync-workspace)
-  (emskin--sync-focus (selected-window)))
+  (emskin--exec-effects
+   (append (list (lambda () (setq emskin--active-workspace-id workspace-id))
+                 (lambda () (setq emskin--last-focused-wid 'unset))
+                 (lambda () (emskin--resync-workspace)))
+           (emskin--suppress-workspace-switch-thunks 0.3)
+           (or (emskin--sync-focus-thunks (selected-window)) nil))))
 
 (defun emskin--on-workspace-destroyed (workspace-id)
   "Clean up frame-workspace mapping for destroyed workspace."
   (maphash (lambda (frame ws-id)
              (when (eql ws-id workspace-id)
-               (remhash frame emskin--frame-workspace-table)))
+               (emskin--unmap-frame frame)))
            emskin--frame-workspace-table))
 
 ;; ---------------------------------------------------------------------------
@@ -66,23 +85,21 @@
 
 (defun emskin--resync-workspace ()
   "Force full re-sync for the active workspace's frame.
-Clears change detection then delegates to `emskin--sync-frame',
-which handles source/mirror separation correctly."
-  (dolist (buf (buffer-list))
-    (when (buffer-local-value 'emskin--window-id buf)
-      (with-current-buffer buf
-        (setq-local emskin--last-geometry nil))))
+Clears geometry cache only for windows in the active frame, then
+delegates to `emskin--sync-frame'."
   (when-let* ((fr (emskin--active-frame)))
+    (walk-windows (lambda (win)
+                    (let ((buf (window-buffer win)))
+                      (when (buffer-local-value 'emskin--window-id buf)
+                        (with-current-buffer buf
+                          (setq-local emskin--last-geometry nil)))))
+                  nil fr)
     (emskin--sync-frame fr)))
 
 (defun emskin--active-frame ()
-  "Return the Emacs frame for the active workspace, or nil."
-  (let (result)
-    (maphash (lambda (frame ws-id)
-               (when (eql ws-id emskin--active-workspace-id)
-                 (setq result frame)))
-             emskin--frame-workspace-table)
-    result))
+  "Return the Emacs frame for the active workspace, or nil.
+Uses the reverse mapping table for O(1) lookup."
+  (gethash emskin--active-workspace-id emskin--ws-to-frame-table))
 
 ;; ---------------------------------------------------------------------------
 ;; Frame creation / deletion hooks
@@ -98,7 +115,7 @@ which handles source/mirror separation correctly."
 
 (defun emskin--delete-frame-hook (frame)
   "Clean up workspace mapping when a frame is deleted."
-  (remhash frame emskin--frame-workspace-table))
+  (emskin--unmap-frame frame))
 
 ;; ---------------------------------------------------------------------------
 ;; Focus-change driven workspace switch
@@ -112,12 +129,11 @@ which handles source/mirror separation correctly."
            (ws-id (gethash frame emskin--frame-workspace-table)))
       (when (and ws-id
                  (not (eql ws-id emskin--active-workspace-id)))
-        (setq emskin--workspace-switch-suppressed t)
-        (emskin--send `((type . "switch_workspace")
-                        (workspace_id . ,ws-id)))
-        (run-with-timer 0.2 nil
-                        (lambda ()
-                          (setq emskin--workspace-switch-suppressed nil)))))))
+        (emskin--exec-effects
+         (append (emskin--suppress-workspace-switch-thunks 0.2)
+                 (list (lambda ()
+                         (emskin--call* 'switch-workspace
+                                        :workspace_id ws-id)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; other-frame advice
@@ -125,21 +141,24 @@ which handles source/mirror separation correctly."
 
 (defun emskin--advise-other-frame (orig-fn &optional arg &rest args)
   "Switch compositor workspace around `other-frame'.
-Sends switch_workspace BEFORE so GTK can focus the target window.
-Resync is handled by `emskin--on-workspace-switched' when the
-compositor confirms the switch via IPC — NOT here, because
-`active-workspace-id' is still stale at this point."
+Suppresses `emskin--after-focus-change' before delegating to the
+original, then sends `switch-workspace' based on the actual target
+frame — no repeated frame-cycle logic."
   (when emskin--process
-    (let* ((n (or arg 1))
-           (target (let ((f (selected-frame)))
-                     (dotimes (_ (abs n))
-                       (setq f (if (> n 0) (next-frame f) (previous-frame f))))
-                     f))
-           (ws-id (gethash target emskin--frame-workspace-table)))
-      (when (and ws-id (not (eql ws-id emskin--active-workspace-id)))
-        (emskin--send `((type . "switch_workspace")
-                        (workspace_id . ,ws-id))))))
-  (apply orig-fn arg args))
+    (emskin--exec-effects
+     (list (lambda () (setq emskin--workspace-switch-suppressed t)))))
+  (unwind-protect
+      (apply orig-fn arg args)
+    (when emskin--process
+      (let* ((frame (selected-frame))
+             (ws-id (gethash frame emskin--frame-workspace-table)))
+        (emskin--exec-effects
+         (append (emskin--suppress-workspace-switch-thunks 0.2)
+                 (when (and ws-id
+                            (not (eql ws-id emskin--active-workspace-id)))
+                   (list (lambda ()
+                           (emskin--call* 'switch-workspace
+                                          :workspace_id ws-id))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Register hooks and advice

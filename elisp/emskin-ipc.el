@@ -26,11 +26,20 @@
   "Hook run after the IPC connection to emskin is (re-)established.")
 
 ;; ---------------------------------------------------------------------------
-;; Codec: 4-byte u32 LE length prefix + JSON payload
+;; Codec: pure primitives
 ;; ---------------------------------------------------------------------------
 
+(defun emskin--read-u32-le (buf offset)
+  "Read a 32-bit little-endian unsigned integer from BUF at OFFSET.
+Returns nil if BUF is too short."
+  (when (>= (length buf) (+ offset 4))
+    (+ (aref buf offset)
+       (ash (aref buf (+ offset 1)) 8)
+       (ash (aref buf (+ offset 2)) 16)
+       (ash (aref buf (+ offset 3)) 24))))
+
 (defun emskin--encode-message (msg)
-  "Encode MSG (alist/plist) as a framed JSON message (unibyte string)."
+  "Encode MSG (alist) as a framed JSON message (unibyte string)."
   (let* ((json (encode-coding-string (json-encode msg) 'utf-8 t))
          (len (length json))
          (prefix (unibyte-string
@@ -40,50 +49,65 @@
                   (logand (ash len -24) #xff))))
     (concat prefix json)))
 
-(defun emskin--decode-next ()
-  "Extract one complete message from `emskin--read-buf'.
-Returns parsed JSON (hash-table) or nil if more data is needed.
-Coerces buffer to unibyte so aref always yields raw byte values 0-255."
-  (when (>= (length emskin--read-buf) 4)
-    (let* ((b0 (aref emskin--read-buf 0))
-           (b1 (aref emskin--read-buf 1))
-           (b2 (aref emskin--read-buf 2))
-           (b3 (aref emskin--read-buf 3))
-           (len (+ b0 (ash b1 8) (ash b2 16) (ash b3 24))))
-      (when (>= (length emskin--read-buf) (+ 4 len))
+(defun emskin--decode-one (buf)
+  "Try extract one framed JSON message from BUF.
+Returns (REMAINING-BUF . MSG) where REMAINING-BUF is the unconsumed
+data and MSG is the decoded object (hash-table) or nil.  Pure — BUF
+is not modified.
+On incomplete frame returns (buf . nil)."
+  (let* ((len (emskin--read-u32-le buf 0)))
+    (if (and len (>= (length buf) (+ 4 len)))
         (let* ((payload (decode-coding-string
-                         (substring emskin--read-buf 4 (+ 4 len)) 'utf-8))
+                          (substring buf 4 (+ 4 len)) 'utf-8))
                (obj (json-parse-string payload)))
-          (setq emskin--read-buf
-                (substring emskin--read-buf (+ 4 len)))
-          obj)))))
+          (cons (substring buf (+ 4 len)) obj))
+      (cons buf nil))))
+
+;; ---------------------------------------------------------------------------
+;; Codec: legacy wrappers
+;; ---------------------------------------------------------------------------
+
+(defun emskin--decode-next ()
+  "Convenience wrapper over `emskin--decode-one' on `emskin--read-buf'.
+Returns parsed message or nil; mutates `emskin--read-buf'."
+  (let ((result (emskin--decode-one emskin--read-buf)))
+    (setq emskin--read-buf (car result))
+    (cdr result)))
 
 ;; ---------------------------------------------------------------------------
 ;; Socket discovery
 ;; ---------------------------------------------------------------------------
 
 (defun emskin--ipc-path ()
-  "Return the IPC socket path, auto-discovering via parent PID when needed."
+  "Return the IPC socket path, auto-discovering via parent PID.
+Reads /proc directly instead of spawning a subprocess."
   (or emskin-ipc-path
-      (let* ((ppid (string-trim
-                    (shell-command-to-string
-                     (format "cat /proc/%d/status | awk '/^PPid:/{print $2}'"
-                             (emacs-pid)))))
-             (runtime-dir (or (getenv "XDG_RUNTIME_DIR") "/tmp")))
-        (format "%s/emskin-%s.ipc" runtime-dir ppid))))
+      (with-temp-buffer
+        (insert-file-contents-literally
+         (format "/proc/%d/status" (emacs-pid)))
+        (goto-char (point-min))
+        (let ((ppid (and (re-search-forward "^PPid:\t\\([0-9]+\\)" nil t)
+                         (match-string 1))))
+          (format "%s/emskin-%s.ipc"
+                  (or (getenv "XDG_RUNTIME_DIR") "/tmp")
+                  ppid)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Process filter and sentinel
 ;; ---------------------------------------------------------------------------
 
 (defun emskin--filter (proc data)
-  "Accumulate DATA from PROC and dispatch complete messages."
+  "Accumulate DATA from PROC and dispatch complete messages.
+Reads and writes `emskin--read-buf' only at entry and exit;
+internal decode loop uses a local buffer variable."
   (ignore proc)
-  (setq emskin--read-buf
-        (concat emskin--read-buf data))
-  (let (msg)
-    (while (setq msg (emskin--decode-next))
-      (run-hook-with-args 'emskin--message-hook msg))))
+  (let ((buf (concat emskin--read-buf data))
+        result msg)
+    (while (setq result (emskin--decode-one buf)
+                 msg (cdr result))
+      (setq buf (car result))
+      (run-hook-with-args 'emskin--message-hook msg))
+    (setq emskin--read-buf buf)))
 
 (defun emskin--sentinel (proc event)
   "Handle IPC connection state changes."
@@ -96,10 +120,20 @@ Coerces buffer to unibyte so aref always yields raw byte values 0-255."
 ;; Send / Connect
 ;; ---------------------------------------------------------------------------
 
+(defun emskin--send-thunk (msg)
+  "Return thunk that sends MSG when called.
+Encoding (pure computation) happens at thunk creation time; the
+actual network write (effect) happens when the thunk is executed.
+The process reference is captured at creation time."
+  (let ((encoded (emskin--encode-message msg))
+        (proc emskin--process))
+    (lambda ()
+      (when proc
+        (process-send-string proc encoded)))))
+
 (defun emskin--send (msg)
   "Send MSG (alist) to emskin over IPC."
-  (when emskin--process
-    (process-send-string emskin--process (emskin--encode-message msg))))
+  (funcall (emskin--send-thunk msg)))
 
 (defun emskin-connect ()
   "Connect to the emskin IPC socket (auto-discovers path)."
