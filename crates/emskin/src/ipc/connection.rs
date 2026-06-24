@@ -2,8 +2,6 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 
-use super::messages::OutgoingMessage;
-
 /// Maximum allowed IPC message payload size (1 MiB).
 const MAX_MSG_SIZE: usize = 1024 * 1024;
 
@@ -43,46 +41,39 @@ impl IpcConn {
     /// Attempt to decode and return the next complete message, if available.
     /// Returns `Err` if the framed length exceeds `MAX_MSG_SIZE`.
     pub fn try_recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-        if self.read_buf.len() < 4 {
+        let header_end = self.read_buf.windows(4).position(|w| w == b"\r\n\r\n");
+        let Some(header_end) = header_end else {
             return Ok(None);
-        }
-        let len = u32::from_le_bytes([
-            self.read_buf[0],
-            self.read_buf[1],
-            self.read_buf[2],
-            self.read_buf[3],
-        ]) as usize;
+        };
+        let header = &self.read_buf[..header_end];
+        let header_str = std::str::from_utf8(header)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-utf8 header"))?;
+        let len = header_str
+            .strip_prefix("Content-Length:")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length"))?;
         if len > MAX_MSG_SIZE {
             self.read_buf.clear();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("IPC message size {len} exceeds maximum {MAX_MSG_SIZE}"),
+                format!("Content-Length {len} exceeds maximum {MAX_MSG_SIZE}"),
             ));
         }
-        if self.read_buf.len() < 4 + len {
+        let body_start = header_end + 4;
+        let body_end = body_start + len;
+        if self.read_buf.len() < body_end {
             return Ok(None);
         }
-        let payload = self.read_buf[4..4 + len].to_vec();
-        self.read_buf.drain(..4 + len);
+        let payload = self.read_buf[body_start..body_end].to_vec();
+        self.read_buf.drain(..body_end);
         Ok(Some(payload))
     }
 
-    /// Enqueue a message for sending (4-byte LE length prefix + JSON).
-    pub fn enqueue(&mut self, msg: &OutgoingMessage) {
-        match serde_json::to_vec(msg) {
-            Ok(json) => {
-                let len = match u32::try_from(json.len()) {
-                    Ok(n) => n,
-                    Err(_) => {
-                        tracing::error!("IPC message too large to frame ({} bytes)", json.len());
-                        return;
-                    }
-                };
-                self.write_buf.extend(len.to_le_bytes());
-                self.write_buf.extend(json);
-            }
-            Err(e) => tracing::error!("IPC serialize error: {e}"),
-        }
+    /// Enqueue a raw byte payload with a `Content-Length` header.
+    pub fn enqueue_raw(&mut self, data: &[u8]) {
+        let header = format!("Content-Length: {}\r\n\r\n", data.len());
+        self.write_buf.extend(header.as_bytes());
+        self.write_buf.extend(data);
     }
 
     /// Flush as many bytes as possible from `write_buf` without blocking.
@@ -122,10 +113,9 @@ mod tests {
         (IpcConn::new(a).unwrap(), b)
     }
 
-    /// Write a properly framed message to the raw stream.
-    fn write_framed(stream: &mut UnixStream, payload: &[u8]) {
-        let len = payload.len() as u32;
-        stream.write_all(&len.to_le_bytes()).unwrap();
+    fn write_content_length(stream: &mut UnixStream, payload: &[u8]) {
+        let header = format!("Content-Length: {}\r\n\r\n", payload.len());
+        stream.write_all(header.as_bytes()).unwrap();
         stream.write_all(payload).unwrap();
     }
 
@@ -138,18 +128,7 @@ mod tests {
     #[test]
     fn try_recv_returns_none_on_incomplete_header() {
         let (mut conn, mut peer) = make_pair();
-        // Write only 2 bytes (header needs 4).
-        peer.write_all(&[0x05, 0x00]).unwrap();
-        conn.fill_read_buf().ok();
-        assert!(conn.try_recv().unwrap().is_none());
-    }
-
-    #[test]
-    fn try_recv_returns_none_on_incomplete_payload() {
-        let (mut conn, mut peer) = make_pair();
-        // Header says 10 bytes, but only write 5.
-        peer.write_all(&10u32.to_le_bytes()).unwrap();
-        peer.write_all(b"hello").unwrap();
+        peer.write_all(b"Content-L").unwrap();
         conn.fill_read_buf().ok();
         assert!(conn.try_recv().unwrap().is_none());
     }
@@ -158,18 +137,28 @@ mod tests {
     fn try_recv_decodes_single_message() {
         let (mut conn, mut peer) = make_pair();
         let payload = b"hello world";
-        write_framed(&mut peer, payload);
+        write_content_length(&mut peer, payload);
         conn.fill_read_buf().ok();
         let msg = conn.try_recv().unwrap().unwrap();
         assert_eq!(msg, payload);
     }
 
     #[test]
+    fn try_recv_returns_none_on_incomplete_payload() {
+        let (mut conn, mut peer) = make_pair();
+        let header = b"Content-Length: 10\r\n\r\n";
+        peer.write_all(header).unwrap();
+        peer.write_all(b"hello").unwrap();
+        conn.fill_read_buf().ok();
+        assert!(conn.try_recv().unwrap().is_none());
+    }
+
+    #[test]
     fn try_recv_handles_multiple_messages_in_one_read() {
         let (mut conn, mut peer) = make_pair();
-        write_framed(&mut peer, b"msg1");
-        write_framed(&mut peer, b"msg2");
-        write_framed(&mut peer, b"msg3");
+        write_content_length(&mut peer, b"msg1");
+        write_content_length(&mut peer, b"msg2");
+        write_content_length(&mut peer, b"msg3");
         conn.fill_read_buf().ok();
 
         assert_eq!(conn.try_recv().unwrap().unwrap(), b"msg1");
@@ -181,7 +170,7 @@ mod tests {
     #[test]
     fn try_recv_handles_empty_payload() {
         let (mut conn, mut peer) = make_pair();
-        write_framed(&mut peer, b"");
+        write_content_length(&mut peer, b"");
         conn.fill_read_buf().ok();
         let msg = conn.try_recv().unwrap().unwrap();
         assert!(msg.is_empty());
@@ -190,9 +179,8 @@ mod tests {
     #[test]
     fn try_recv_rejects_oversized_message() {
         let (mut conn, mut peer) = make_pair();
-        // Write a header claiming 2 MiB (exceeds MAX_MSG_SIZE of 1 MiB).
-        let huge_len = (2 * 1024 * 1024u32).to_le_bytes();
-        peer.write_all(&huge_len).unwrap();
+        let header = b"Content-Length: 2097152\r\n\r\n";
+        peer.write_all(header).unwrap();
         conn.fill_read_buf().ok();
         let result = conn.try_recv();
         assert!(result.is_err());
@@ -203,24 +191,34 @@ mod tests {
         let (mut conn, mut peer) = make_pair();
         peer.set_nonblocking(true).unwrap();
 
-        let msg = OutgoingMessage::Connected { version: "0.1.0" };
-        conn.enqueue(&msg);
+        let payload = b"{\"jsonrpc\":\"2.0\",\"method\":\"test\"}";
+        conn.enqueue_raw(payload);
         assert!(conn.has_pending_writes());
 
         conn.try_flush().unwrap();
         assert!(!conn.has_pending_writes());
 
-        // Read the framed message from the peer side.
+        // Read the Content-Length framed message from the peer side.
         peer.set_nonblocking(false).unwrap();
-        let mut header = [0u8; 4];
-        peer.read_exact(&mut header).unwrap();
-        let len = u32::from_le_bytes(header) as usize;
-        let mut payload = vec![0u8; len];
-        peer.read_exact(&mut payload).unwrap();
 
-        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(json["type"], "connected");
-        assert_eq!(json["version"], "0.1.0");
+        // Read until we see \r\n\r\n
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1];
+        loop {
+            peer.read_exact(&mut tmp).unwrap();
+            buf.push(tmp[0]);
+            if buf.len() >= 4 && buf[buf.len() - 4..] == [b'\r', b'\n', b'\r', b'\n'] {
+                break;
+            }
+        }
+        let header_str = std::str::from_utf8(&buf[..buf.len() - 4]).unwrap();
+        let len: usize = header_str
+            .strip_prefix("Content-Length: ")
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap();
+        let mut body = vec![0u8; len];
+        peer.read_exact(&mut body).unwrap();
+        assert_eq!(body, payload);
     }
 
     #[test]
