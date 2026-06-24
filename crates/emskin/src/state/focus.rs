@@ -44,7 +44,7 @@ impl KeyboardFocusTarget {
     /// `WindowSurface` internally (returns `None` for the X11 branch when
     /// smithay's `xwayland` feature is enabled), so we don't need an
     /// explicit match — and we avoid a non-exhaustive match error when the
-    /// feature is pulled in by a sibling crate (emez).
+    /// feature is pulled in by a sibling crate.
     fn inner(&self) -> &dyn KeyboardTarget<EmskinState> {
         match self {
             Self::Window(w) => w

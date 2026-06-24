@@ -126,7 +126,7 @@ impl XdgShellHandler for EmskinState {
             // via xwayland-satellite) to give up and exit.
             window
                 .user_data()
-                .insert_if_missing(crate::tick::PendingClassificationTag::default);
+                .insert_if_missing(crate::handlers::dialogs::PendingClassificationTag::default);
             self.workspace
                 .active_space
                 .map_element(window.clone(), (0, 0), false);
@@ -174,7 +174,7 @@ impl XdgShellHandler for EmskinState {
         };
         if window
             .user_data()
-            .get::<crate::tick::FloatingDialogTag>()
+            .get::<crate::handlers::dialogs::FloatingDialogTag>()
             .is_none()
         {
             return;
@@ -467,7 +467,7 @@ pub fn handle_surface_commit(
         // dialog-vs-app classification — see PendingClassificationTag.
         let pending_classification = window
             .user_data()
-            .get::<crate::tick::PendingClassificationTag>()
+            .get::<crate::handlers::dialogs::PendingClassificationTag>()
             .is_some();
 
         if !initial_configure_sent && !pending_classification {

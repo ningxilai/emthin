@@ -220,7 +220,6 @@ fn render_frame(
 
     if let Err(e) = backend.submit(Some(&[damage])) {
         tracing::error!("frame submit failed: {e}");
-        return;
     }
 }
 

@@ -1,4 +1,6 @@
+pub(crate) mod apps;
 mod compositor;
+pub(crate) mod dialogs;
 mod dmabuf;
 mod layer_shell;
 mod output;

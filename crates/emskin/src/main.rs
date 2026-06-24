@@ -1,99 +1,12 @@
 use clap::Parser;
-use include_dir::{include_dir, Dir};
 use smithay::reexports::wayland_server::Display;
 
-use emskin::{ipc, state, EmskinState};
+use emskin::{activation, cli::Cli, ipc, state, util, EmskinState};
 use emskin_clipboard::{BackendHint, ClipboardBackend};
-
-static ELISP_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../elisp");
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "emskin",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("EMSKIN_GIT_SHA"), ")")
-)]
-struct Cli {
-    /// Do not spawn a child process; wait for an external connection.
-    #[arg(long)]
-    no_spawn: bool,
-
-    /// Program to launch (default: "emacs").
-    #[arg(long, default_value = "emacs")]
-    command: String,
-
-    /// Arguments for --command.
-    #[arg(long = "arg", num_args = 1)]
-    command_args: Vec<String>,
-
-    /// Explicit IPC socket path (default: $XDG_RUNTIME_DIR/emskin-<pid>.ipc).
-    #[arg(long)]
-    ipc_path: Option<std::path::PathBuf>,
-
-    /// Pin the Wayland display socket name (default: auto-chosen wayland-N
-    /// by smithay). Useful when external Wayland clients (wl-copy, xclip,
-    /// E2E tests) need a predictable `WAYLAND_DISPLAY`. Overrides the
-    /// `EMSKIN_WAYLAND_SOCKET_NAME` env var if both are set.
-    #[arg(long)]
-    wayland_socket: Option<String>,
-
-    /// XKB keyboard layout (e.g. "us", "de", "cn").
-    #[arg(long, default_value = "")]
-    xkb_layout: String,
-
-    /// XKB keyboard model (e.g. "pc105").
-    #[arg(long, default_value = "")]
-    xkb_model: String,
-
-    /// XKB layout variant (e.g. "nodeadkeys").
-    #[arg(long, default_value = "")]
-    xkb_variant: String,
-
-    /// XKB options (e.g. "ctrl:nocaps").
-    #[arg(long)]
-    xkb_options: Option<String>,
-
-    /// Standalone mode: auto-load built-in elisp without user config.
-    #[arg(long)]
-    standalone: bool,
-
-    /// Request fullscreen for the host compositor window on startup.
-    #[arg(long)]
-    fullscreen: bool,
-
-    /// Write tracing logs to this file instead of stderr.
-    /// Useful for E2E tests that want clean test output but preserved
-    /// diagnostics on failure.
-    #[arg(long)]
-    log_file: Option<std::path::PathBuf>,
-
-    /// Pin the XWayland DISPLAY number that emskin asks
-    /// xwayland-satellite to claim. Without this, the supervisor
-    /// scans `/tmp/.X{0..N}-lock` from 0 for a free slot — which races
-    /// when multiple emskin instances start in parallel (E2E tests with
-    /// default `--test-threads`). The test harness uses this to
-    /// pre-allocate a unique number per test.
-    #[arg(long)]
-    xwayland_display: Option<u32>,
-
-    /// Path to the `xwayland-satellite` binary. Defaults to the binary
-    /// found on `$PATH`.
-    #[arg(long, default_value = "xwayland-satellite")]
-    xwayland_satellite_bin: std::path::PathBuf,
-
-    /// Spawn a private `dbus-daemon` for embedded apps and route the
-    /// broker's upstream to it instead of the host session bus.
-    /// Side effects: `.service` activations (portal, GApplication
-    /// single-instance) happen inside emskin's environment, so windows
-    /// stop leaking out to the host compositor. Notifications, tray,
-    /// secret service, and any other host-only services become
-    /// unreachable from inside emskin in this mode. Experimental.
-    #[arg(long)]
-    dbus_isolated: bool,
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    init_logging(cli.log_file.as_deref());
+    util::init_logging(cli.log_file.as_deref());
 
     // --wayland-socket is plumbed through an env var so state.rs's
     // `init_wayland_listener` can stay signature-stable; CLI flag takes
@@ -107,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let display: Display<EmskinState> = Display::new()?;
 
-    let ipc_path = cli.ipc_path.clone().unwrap_or_else(default_ipc_path);
+    let ipc_path = cli.ipc_path.clone().unwrap_or_else(util::default_ipc_path);
     tracing::info!("IPC socket path: {}", ipc_path.display());
 
     // xkbcommon treats "" as invalid (not "use default"), so when variant is
@@ -142,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GNOME/KWin startup-notification path, and the only way to get
     // focus on hosts that don't auto-focus new toplevels (Mutter).
     // No-op if env is empty or host lacks xdg_activation_v1.
-    activate_main_surface_if_env_token(&state);
+    activation::activate_main_surface_if_env_token(&state);
 
     // Initialize clipboard synchronization with host compositor.
     // Fallback chain: Wayland data-control (no-focus, preferred) →
@@ -159,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // selection (only meaningful when the host is Xorg). See
         // emskin_clipboard::BackendHint for per-variant semantics.
         let mut hints: Vec<BackendHint> = vec![BackendHint::DataControl];
-        if let Some(ptr) = host_wl_display_ptr(&state) {
+        if let Some(ptr) = util::host_wl_display_ptr(&state) {
             // SAFETY: the wl_display is owned by winit's backend, which
             // lives in `state.backend` for the entire compositor run. The
             // returned clipboard backend sits in `state.selection.clipboard`
@@ -239,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        spawn_child(&pc.command, &pc.args, display, pc.standalone, &mut state);
+        util::spawn_child(&pc.command, &pc.args, display, pc.standalone, &mut state);
     }
 
     // Launch the external workspace bar (if configured). Done after the
@@ -475,104 +388,6 @@ fn drop_dbus_connection(state: &mut EmskinState, id: emskin_dbus::ConnId, side: 
     }
 }
 
-fn spawn_child(
-    command: &str,
-    args: &[String],
-    x_display: Option<u32>,
-    standalone: bool,
-    state: &mut EmskinState,
-) {
-    let Some(socket_name) = state.socket_name.to_str() else {
-        tracing::error!("Wayland socket name is not valid UTF-8, cannot spawn child");
-        return;
-    };
-
-    let mut full_args: Vec<String> = Vec::new();
-
-    if standalone {
-        if let Some(elisp_dir) = extract_embedded(&ELISP_DIR, "elisp") {
-            full_args.push("--directory".to_string());
-            full_args.push(elisp_dir.to_string_lossy().into_owned());
-            full_args.push("-l".to_string());
-            full_args.push("emskin".to_string());
-            state.elisp_dir = Some(elisp_dir);
-        }
-    }
-
-    full_args.extend_from_slice(args);
-
-    let display_log = match x_display {
-        Some(d) => format!(":{d}"),
-        None => std::env::var("DISPLAY").unwrap_or_else(|_| "<unset>".to_string()),
-    };
-    tracing::info!(
-        "Spawning: {command} {full_args:?} (WAYLAND_DISPLAY={socket_name} DISPLAY={display_log})"
-    );
-    let mut cmd = std::process::Command::new(command);
-    cmd.args(&full_args)
-        .env("WAYLAND_DISPLAY", socket_name)
-        // Ensure child apps prefer Wayland even when host is X11.
-        .env("XDG_SESSION_TYPE", "wayland")
-        .env("XDG_SESSION_DESKTOP", "emskin");
-    if let Some(d) = x_display {
-        // Satellite came up — point children at our nested X socket.
-        cmd.env("DISPLAY", format!(":{d}"));
-    }
-    // No satellite — leave DISPLAY inherited from emskin's parent.
-    // X11 children then fall back to the host X server (if any),
-    // which means windows render outside the nested compositor but
-    // X11 utilities (xdg-open, screenshots, clipboard helpers)
-    // still work. Failing fast by stripping DISPLAY proved too
-    // aggressive: pgtk Emacs doesn't care, but X11-leaning tools
-    // launched as helpers from inside Emacs would all break.
-    // Redirect the session bus through emskin-dbus-proxy (if running) so
-    // embedded apps' IME cursor-position calls are translated into
-    // emskin-local coordinates before they reach fcitx5 on the host.
-    state.dbus.inject_env(&mut cmd);
-    match cmd.spawn() {
-        Ok(child) => state.emacs.set_child(child),
-        Err(e) => tracing::error!("Failed to spawn '{command}': {e}"),
-    }
-}
-
-/// Launch the external workspace bar according to the `--bar` flag.
-///
-/// `auto` looks first next to the emskin binary (same directory — matches
-/// the AUR package layout and the dev target dir), then falls back to PATH.
-/// `none` skips entirely. Any other value is treated as an explicit path —
-/// useful for wiring in a third-party bar like waybar.
-fn runtime_dir() -> String {
-    std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string())
-}
-
-/// Extract an embedded `include_dir` tree to
-/// `$XDG_RUNTIME_DIR/emskin-<pid>/<subdir>/`.
-fn extract_embedded(src: &Dir<'_>, subdir: &str) -> Option<std::path::PathBuf> {
-    let dest = std::path::PathBuf::from(format!(
-        "{}/emskin-{}/{subdir}",
-        runtime_dir(),
-        std::process::id(),
-    ));
-    if let Err(e) = std::fs::create_dir_all(&dest) {
-        tracing::error!("Failed to create {subdir} dir {}: {e}", dest.display());
-        return None;
-    }
-    for file in src.files() {
-        let out = dest.join(file.path());
-        if let Err(e) = std::fs::write(&out, file.contents()) {
-            tracing::error!("Failed to write {}: {e}", out.display());
-            return None;
-        }
-    }
-    tracing::info!("Extracted embedded {subdir} to {}", dest.display());
-    Some(dest)
-}
-
-fn default_ipc_path() -> std::path::PathBuf {
-    let pid = std::process::id();
-    std::path::PathBuf::from(format!("{}/emskin-{pid}.ipc", runtime_dir()))
-}
-
 /// niri-style xwayland-satellite integration.
 ///
 /// emskin pre-binds the X11 display sockets and only spawns the external
@@ -622,7 +437,7 @@ fn start_xwayland_satellite(
     let spawn_cfg = SpawnConfig {
         binary: binary.to_path_buf(),
         wayland_socket: std::path::PathBuf::from(socket_name),
-        xdg_runtime_dir: std::path::PathBuf::from(runtime_dir()),
+        xdg_runtime_dir: std::path::PathBuf::from(util::runtime_dir()),
     };
 
     let (tx, rx) = channel::channel::<ToMain>();
@@ -709,164 +524,5 @@ fn register_clipboard_source(
     Ok(())
 }
 
-/// Return the host `wl_display` pointer from winit's backend if it's
-/// running on the Wayland platform. Returns `None` on X11 or if no
-/// backend has been initialized yet.
-fn host_wl_display_ptr(state: &EmskinState) -> Option<*mut std::ffi::c_void> {
-    use winit_crate::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    let backend = state.backend.as_ref()?;
-    let handle = backend.window().display_handle().ok()?;
-    match handle.as_raw() {
-        RawDisplayHandle::Wayland(wl) => Some(wl.display.as_ptr()),
-        _ => None,
-    }
-}
 
-/// Return the host `wl_surface` pointer of emskin's winit main window
-/// if running on Wayland. Used together with `host_wl_display_ptr` to
-/// call `xdg_activation_v1.activate` on the main surface.
-fn host_wl_surface_ptr(state: &EmskinState) -> Option<*mut std::ffi::c_void> {
-    use winit_crate::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let backend = state.backend.as_ref()?;
-    let handle = backend.window().window_handle().ok()?;
-    match handle.as_raw() {
-        RawWindowHandle::Wayland(wl) => Some(wl.surface.as_ptr()),
-        _ => None,
-    }
-}
 
-/// If `XDG_ACTIVATION_TOKEN` (or `DESKTOP_STARTUP_ID`) is present in the
-/// environment and the host compositor advertises
-/// `xdg_activation_v1`, call `activate(token, main_surface)` to move
-/// keyboard focus to emskin's main window. This is the protocol-legal
-/// startup-notification path real Mutter / KWin both honour (and the
-/// only focus path emez gives us now that it no longer auto-focuses
-/// new toplevels).
-///
-/// Does nothing on X11, when the token is absent, or when the host
-/// lacks `xdg_activation_v1`. Runs as a short self-contained event
-/// loop (bind → activate → roundtrip → drop) — the activation token
-/// itself stays valid for the emez / host compositor run; we don't
-/// need to keep our wayland connection alive.
-fn activate_main_surface_if_env_token(state: &EmskinState) {
-    use wayland_client::backend::{Backend, ObjectId};
-    use wayland_client::protocol::wl_registry;
-    use wayland_client::protocol::wl_surface::WlSurface;
-    use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
-    use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::{
-        self, XdgActivationV1,
-    };
-
-    let Some(token) = std::env::var("XDG_ACTIVATION_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("DESKTOP_STARTUP_ID").ok())
-    else {
-        return;
-    };
-    let Some(display_ptr) = host_wl_display_ptr(state) else {
-        return;
-    };
-    let Some(surface_ptr) = host_wl_surface_ptr(state) else {
-        return;
-    };
-
-    // SAFETY: display_ptr + surface_ptr come from winit's raw-window-handle,
-    // both valid for at least the duration of this short sync.
-    let backend = unsafe { Backend::from_foreign_display(display_ptr.cast()) };
-    let connection = Connection::from_backend(backend);
-
-    struct State {
-        activation: Option<XdgActivationV1>,
-    }
-    impl Dispatch<wl_registry::WlRegistry, ()> for State {
-        fn event(
-            state: &mut Self,
-            registry: &wl_registry::WlRegistry,
-            event: wl_registry::Event,
-            _: &(),
-            _: &Connection,
-            qh: &QueueHandle<Self>,
-        ) {
-            if let wl_registry::Event::Global {
-                name,
-                interface,
-                version,
-            } = event
-            {
-                if interface == "xdg_activation_v1" && state.activation.is_none() {
-                    state.activation = Some(registry.bind(name, version.min(1), qh, ()));
-                }
-            }
-        }
-    }
-    impl Dispatch<XdgActivationV1, ()> for State {
-        fn event(
-            _: &mut Self,
-            _: &XdgActivationV1,
-            _: xdg_activation_v1::Event,
-            _: &(),
-            _: &Connection,
-            _: &QueueHandle<Self>,
-        ) {
-        }
-    }
-
-    let mut queue = connection.new_event_queue::<State>();
-    let qh = queue.handle();
-    let _registry = connection.display().get_registry(&qh, ());
-    let mut st = State { activation: None };
-
-    if let Err(e) = queue.roundtrip(&mut st) {
-        tracing::debug!("xdg_activation roundtrip failed: {e}");
-        return;
-    }
-
-    let Some(activation) = st.activation.as_ref() else {
-        tracing::debug!("host does not advertise xdg_activation_v1; skip self-activate");
-        return;
-    };
-
-    // Wrap the raw wl_surface pointer from winit into a proxy on this
-    // connection. SAFETY: surface_ptr is a live wl_surface proxy from
-    // winit, and we only use this wrapped handle to issue one request
-    // (`activate`) that doesn't destroy or mutate its state.
-    let Ok(surface_id) =
-        (unsafe { ObjectId::from_ptr(WlSurface::interface(), surface_ptr.cast()) })
-    else {
-        tracing::debug!("failed to wrap wl_surface ptr into proxy id");
-        return;
-    };
-    let Ok(surface) = WlSurface::from_id(&connection, surface_id) else {
-        tracing::debug!("failed to construct WlSurface proxy from id");
-        return;
-    };
-
-    activation.activate(token.clone(), &surface);
-    if let Err(e) = connection.flush() {
-        tracing::warn!("xdg_activation flush failed: {e}");
-    }
-    // One roundtrip so the activate request actually leaves our queue
-    // before we drop the connection.
-    let _ = queue.roundtrip(&mut st);
-    tracing::info!(
-        "requested self-activation via xdg_activation_v1 (token bytes={})",
-        token.len()
-    );
-}
-
-fn init_logging(log_file: Option<&std::path::Path>) {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-
-    match log_file {
-        Some(path) => match std::fs::File::create(path) {
-            Ok(file) => tracing_subscriber::fmt()
-                .with_ansi(false)
-                .with_writer(std::sync::Mutex::new(file))
-                .with_env_filter(env_filter)
-                .init(),
-            Err(e) => eprintln!("failed to open --log-file {}: {e}", path.display()),
-        },
-        None => tracing_subscriber::fmt().with_env_filter(env_filter).init(),
-    }
-}

@@ -45,9 +45,6 @@ jobs:
           key: arch-x86_64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml') }}
           restore-keys: arch-x86_64-release-
 
-      - name: Pre-build emskin-bar
-        run: cargo build --release -p emskin-bar
-
       - name: Build and package with cargo-aur
         working-directory: crates/emskin
         # cargo-aur hardcodes a relative `target/` path for both binary
@@ -58,18 +55,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           cp ../../LICENSE .
-          # cargo-aur reads [package.metadata.aur].files with paths relative
-          # to this crate's dir; drop the pre-built sibling binary here so
-          # the tarball + PKGBUILD carry it into /usr/bin/.
-          cp ../../target/release/emskin-bar ./emskin-bar
           cargo aur
-          # cargo-aur hardcodes `install -Dm644` for every `files` entry,
-          # which is wrong for a binary (no execute bit). Patch the
-          # generated PKGBUILD so emskin-bar ends up executable.
-          sed -i \
-            's|install -Dm644 "emskin-bar"|install -Dm755 "emskin-bar"|' \
-            "$CARGO_TARGET_DIR/cargo-aur/PKGBUILD"
-          rm LICENSE emskin-bar
+          rm LICENSE
 
       - name: Get version
         id: version

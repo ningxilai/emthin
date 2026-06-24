@@ -59,12 +59,12 @@ impl CompositorHandler for EmskinState {
             if let Some(window) = committed_window {
                 if window
                     .user_data()
-                    .get::<crate::tick::FloatingDialogTag>()
+                    .get::<crate::handlers::dialogs::FloatingDialogTag>()
                     .is_some()
                     && window.geometry().size.w > 0
                     && window.geometry().size.h > 0
                 {
-                    crate::tick::re_center_dialog(self, &window);
+                    crate::handlers::dialogs::re_center_dialog(self, &window);
                 }
             }
 

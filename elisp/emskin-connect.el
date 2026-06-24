@@ -4,9 +4,6 @@
 
 (require 'emskin-ipc)
 
-(defvar emskin-ipc-path nil
-  "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
-
 ;; ---------------------------------------------------------------------------
 ;; Auto-connect when running inside emskin
 ;; ---------------------------------------------------------------------------

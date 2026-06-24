@@ -26,16 +26,6 @@ body:
         ```
         Attach `/tmp/emskin.log` to the issue (drag-drop into the GitHub text box).
 
-        **Screen recording** — emskin has a built-in screencast recorder. From
-        Emacs, run `M-x emskin-toggle-record` to start/stop; the resulting
-        `.mp4` (30 fps by default, see `emskin-record-fps`) lands in
-        `~/Videos/emskin/`. Drag-drop the file into the issue.
-        For visual bugs, also enable `M-x emskin-toggle-key-cast` so keystrokes
-        are overlaid on the recording.
-
-        **Screenshot** — `M-x emskin-screenshot` saves a PNG to
-        `~/Videos/emskin/` (or `emskin-screenshot-dir` if customized).
-
         If you cannot run emskin long enough to reproduce, any external tool
         (`grim`, `wf-recorder`, phone camera) is fine — a short clip beats no
         clip.
@@ -65,7 +55,7 @@ body:
       label: Steps to reproduce
       description: Minimal steps. Include the exact command you used to launch emskin.
       placeholder: |
-        1. Launch `emskin` (optionally with flags, e.g. `emskin --bar none`)
+        1. Launch `emskin` (optionally with flags, e.g. `emskin --standalone`)
         2. Open ...
         3. Press ...
         4. See crash

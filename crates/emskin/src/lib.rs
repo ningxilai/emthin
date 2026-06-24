@@ -1,4 +1,7 @@
+pub mod activation;
+pub mod cli;
 pub mod clipboard_bridge;
+pub mod util;
 pub mod element;
 pub mod grabs;
 pub mod handlers;

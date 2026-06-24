@@ -1,6 +1,34 @@
 ;;; emskin-workspace.el --- Workspace management for emskin  -*- lexical-binding: t; -*-
 
 (require 'emskin-app)
+(require 'emskin-ipc)
+
+;; ---------------------------------------------------------------------------
+;; Workspace-local state
+;; ---------------------------------------------------------------------------
+
+(defvar emskin--pending-frame-queue nil
+  "Frames awaiting workspace_created IPC confirmation (FIFO order).")
+
+(defvar emskin--workspace-switch-suppressed nil
+  "When non-nil, suppress workspace switch from after-focus-change.")
+
+;; ---------------------------------------------------------------------------
+;; IPC message handler (registered on emskin--message-hook)
+;; ---------------------------------------------------------------------------
+
+(defun emskin--handle-workspace-message (msg)
+  "Dispatch workspace-related IPC messages from emskin."
+  (let ((type (gethash "type" msg "")))
+    (cond
+     ((string= type "workspace_created")
+      (emskin--on-workspace-created (gethash "workspace_id" msg)))
+     ((string= type "workspace_switched")
+      (emskin--on-workspace-switched (gethash "workspace_id" msg)))
+     ((string= type "workspace_destroyed")
+      (emskin--on-workspace-destroyed (gethash "workspace_id" msg))))))
+
+(add-hook 'emskin--message-hook #'emskin--handle-workspace-message)
 
 ;; ---------------------------------------------------------------------------
 ;; Workspace lifecycle
@@ -13,19 +41,15 @@
         (when (frame-live-p frame)
           (puthash frame workspace-id emskin--frame-workspace-table)
           (message "emskin: frame → workspace %d" workspace-id)
-          ;; Sync immediately so scroll-bars are fixed and geometry is sent.
           (emskin--sync-frame frame)))
-    ;; No pending frame — this is the initial workspace for the current frame.
     (puthash (selected-frame) workspace-id emskin--frame-workspace-table)))
 
 (defun emskin--on-workspace-switched (workspace-id)
   "Update active workspace tracking and re-sync geometry."
   (setq emskin--active-workspace-id workspace-id)
-  ;; Suppress after-focus-change to prevent feedback loop.
   (setq emskin--workspace-switch-suppressed t)
   (run-with-timer 0.3 nil (lambda () (setq emskin--workspace-switch-suppressed nil)))
   (setq emskin--last-focused-wid 'unset)
-  ;; Force resync via sync-frame (handles source/mirror correctly).
   (emskin--resync-workspace)
   (emskin--sync-focus (selected-window)))
 
@@ -44,12 +68,11 @@
   "Force full re-sync for the active workspace's frame.
 Clears change detection then delegates to `emskin--sync-frame',
 which handles source/mirror separation correctly."
-  ;; Clear change detection so sync-frame fully re-processes.
   (dolist (buf (buffer-list))
     (when (buffer-local-value 'emskin--window-id buf)
       (with-current-buffer buf
         (setq-local emskin--last-geometry nil))))
-  (when-let ((fr (emskin--active-frame)))
+  (when-let* ((fr (emskin--active-frame)))
     (emskin--sync-frame fr)))
 
 (defun emskin--active-frame ()
@@ -69,7 +92,6 @@ which handles source/mirror separation correctly."
   "Queue FRAME for workspace association when a non-child frame is created."
   (when (and emskin--process
              emskin--active-workspace-id
-             ;; Child frames have parent-frame parameter — don't queue.
              (not (frame-parameter frame 'parent-frame)))
     (setq emskin--pending-frame-queue
           (nconc emskin--pending-frame-queue (list frame)))))
@@ -90,11 +112,9 @@ which handles source/mirror separation correctly."
            (ws-id (gethash frame emskin--frame-workspace-table)))
       (when (and ws-id
                  (not (eql ws-id emskin--active-workspace-id)))
-        ;; Suppress further switches until this one completes.
         (setq emskin--workspace-switch-suppressed t)
         (emskin--send `((type . "switch_workspace")
                         (workspace_id . ,ws-id)))
-        ;; Clear suppression after compositor has had time to process.
         (run-with-timer 0.2 nil
                         (lambda ()
                           (setq emskin--workspace-switch-suppressed nil)))))))

@@ -18,7 +18,6 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-bitflags = "2.2.1"
 winit_crate = { package = "winit", version = "0.30", default-features = false }
 # wayland-client still needed for the xdg_activation_v1 client helper in
 # main.rs::activate_main_surface_if_env_token. Clipboard backends live in
@@ -29,8 +28,6 @@ libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 include_dir = "0.7"
 
-[dev-dependencies]
-tempfile = "3"
 
 [package.metadata.release]
 # cargo-release runs hooks with the package root as CWD. Scope the
@@ -60,9 +57,4 @@ depends = ["wayland", "libxkbcommon", "libxkbcommon-x11", "mesa", "libinput", "s
 optdepends = [
     "emacs-wayland: pgtk Emacs (recommended)",
     "emacs: X11 Emacs (works via xwayland-satellite)",
-]
-files = [
-    ["assets/emskin.desktop", "/usr/share/applications/emskin.desktop"],
-    ["assets/emskin.png", "/usr/share/pixmaps/emskin.png"],
-
 ]

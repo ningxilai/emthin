@@ -3,8 +3,24 @@
 (require 'json)
 
 ;; ---------------------------------------------------------------------------
+;; IPC connection state
+;; ---------------------------------------------------------------------------
+
+(defvar emskin--process nil
+  "The network process connected to emskin's IPC socket.")
+
+(defvar emskin--read-buf ""
+  "Accumulates raw bytes received from emskin.")
+
+(defvar emskin-ipc-path nil
+  "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
+
+;; ---------------------------------------------------------------------------
 ;; Hooks
 ;; ---------------------------------------------------------------------------
+
+(defvar emskin--message-hook nil
+  "Hook run with each decoded IPC message (hash-table).")
 
 (defvar emskin-connected-hook nil
   "Hook run after the IPC connection to emskin is (re-)established.")
@@ -64,10 +80,10 @@ Coerces buffer to unibyte so aref always yields raw byte values 0-255."
   "Accumulate DATA from PROC and dispatch complete messages."
   (ignore proc)
   (setq emskin--read-buf
-        (concat emskin--read-buf (string-as-unibyte data)))
+        (concat emskin--read-buf data))
   (let (msg)
     (while (setq msg (emskin--decode-next))
-      (emskin--dispatch msg))))
+      (run-hook-with-args 'emskin--message-hook msg))))
 
 (defun emskin--sentinel (proc event)
   "Handle IPC connection state changes."

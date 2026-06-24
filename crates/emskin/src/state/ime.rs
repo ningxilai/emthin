@@ -53,6 +53,7 @@ use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Logical, Rectangle};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::text_input::{TextInputHandle, TextInputManagerState, TextInputSeat};
 
 use crate::apps::AppManager;
@@ -672,6 +673,46 @@ fn focused_client_has_text_input(ti: &TextInputHandle) -> bool {
     let mut found = false;
     ti.with_focused_text_input(|_, _| found = true);
     found
+}
+
+/// Drain broker-observed fcitx5 events and hand them to the IME
+/// bridge. Each event is translated relative to the currently focused
+/// embedded app's emskin-space origin so the cursor rect reaches
+/// winit in emskin-winit-local coordinates.
+pub(crate) fn drain_fcitx_events(state: &mut crate::EmskinState) {
+    let Some(broker) = state.dbus.broker.as_mut() else {
+        return;
+    };
+    let events = broker.drain_events();
+    if events.is_empty() {
+        return;
+    }
+    state.needs_redraw = true;
+    let origin = focused_app_origin(state);
+    for event in events {
+        state
+            .ime
+            .on_fcitx_event(event, origin, &state.seat, &state.apps);
+    }
+}
+
+/// Emskin-space origin of the app whose DBus fcitx5 IC is currently
+/// active. Added to the client-reported caret rect to translate it
+/// into emskin-winit-local coordinates before we hand it to winit IME.
+fn focused_app_origin(state: &crate::EmskinState) -> Option<[i32; 2]> {
+    let kb = state.seat.get_keyboard()?;
+    let focus = kb.current_focus()?;
+    let window = match focus {
+        crate::state::KeyboardFocusTarget::Window(w) => w,
+        _ => return None,
+    };
+    let surface = window.wl_surface()?;
+    if state.emacs.is_main_surface(&surface) {
+        return Some([0, 0]);
+    }
+    let loc = state.workspace.active_space.element_location(&window)?;
+    let geo_offset = window.geometry().loc;
+    Some([loc.x - geo_offset.x, loc.y - geo_offset.y])
 }
 
 smithay::delegate_text_input_manager!(EmskinState);

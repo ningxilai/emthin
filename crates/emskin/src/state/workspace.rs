@@ -81,3 +81,171 @@ impl WorkspaceState {
         ids
     }
 }
+
+use crate::ipc::OutgoingMessage;
+use smithay::reexports::wayland_server::Resource;
+
+/// Process deferred Emacs toplevels from `pending_emacs_toplevels`.
+/// Called once per tick after `dispatch_clients` has resolved
+/// `surface.parent()` for same-batch toplevels.
+pub(crate) fn process_pending_toplevels(state: &mut crate::EmskinState) {
+    let pending = std::mem::take(&mut state.workspace.pending_emacs_toplevels);
+    if pending.is_empty() {
+        return;
+    }
+    state.needs_redraw = true;
+    for (surface, window) in pending {
+        if surface.parent().is_some() {
+            tracing::info!(
+                "Emacs child frame confirmed (has parent), workspace {}",
+                state.workspace.active_id
+            );
+        } else {
+            state.workspace.active_space.unmap_elem(&window);
+            let ws_id = state.workspace.alloc_id();
+            tracing::info!("new Emacs frame → workspace {ws_id}");
+
+            let emacs_wl = surface.wl_surface().clone();
+            let mut new_space = smithay::desktop::Space::default();
+            if let Some(output) = state.workspace.active_space.outputs().next().cloned() {
+                new_space.map_output(&output, (0, 0));
+            }
+
+            state.workspace.inactive.insert(
+                ws_id,
+                Workspace {
+                    space: new_space,
+                    emacs_surface: Some(emacs_wl),
+                    name: String::new(),
+                },
+            );
+
+            if let Some(geo) = state.emacs_geometry() {
+                surface.with_pending_state(|s| {
+                    s.size = Some(geo.size);
+                    s.states.set(
+                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                    );
+                });
+                surface.send_pending_configure();
+
+                if let Some(ws) = state.workspace.inactive.get_mut(&ws_id) {
+                    ws.space.map_element(window.clone(), geo.loc, false);
+                    ws.space.lower_element(&window);
+                }
+            }
+
+            state.ipc.send(OutgoingMessage::WorkspaceCreated {
+                workspace_id: ws_id,
+            });
+
+            state.switch_workspace(ws_id);
+        }
+    }
+}
+
+/// Process ext-workspace-v1 client actions (activate, remove, etc.).
+pub(crate) fn process_workspace_actions(state: &mut crate::EmskinState) {
+    let actions = state.workspace.protocol.take_pending_actions();
+    if actions.is_empty() {
+        return;
+    }
+    state.needs_redraw = true;
+    for action in actions {
+        use crate::protocols::workspace::WorkspaceAction;
+        match action {
+            WorkspaceAction::Activate(id) => {
+                state.switch_workspace(id);
+            }
+            WorkspaceAction::Remove(id) => {
+                if id != state.workspace.active_id {
+                    state.destroy_workspace(id);
+                    state
+                        .ipc
+                        .send(OutgoingMessage::WorkspaceDestroyed { workspace_id: id });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Detect dead Emacs frames (inactive workspaces whose surface died,
+/// or the active frame itself) and clean up.
+pub(crate) fn detect_dead_workspaces(state: &mut crate::EmskinState) {
+    let dead_ws: Vec<u64> = state
+        .workspace
+        .inactive
+        .iter()
+        .filter(|(_, ws)| ws.emacs_surface.as_ref().is_none_or(|s| !s.is_alive()))
+        .map(|(id, _)| *id)
+        .collect();
+    let had_dead = !dead_ws.is_empty();
+    for ws_id in dead_ws {
+        state.destroy_workspace(ws_id);
+        state.ipc.send(OutgoingMessage::WorkspaceDestroyed {
+            workspace_id: ws_id,
+        });
+        tracing::info!("workspace {ws_id} destroyed (Emacs frame died)");
+    }
+    if had_dead {
+        state.needs_redraw = true;
+    }
+
+    if state.emacs.main_died() {
+        if let Some(&fallback_id) = state.workspace.inactive.keys().next() {
+            tracing::info!("active Emacs died, switching to workspace {fallback_id}");
+            state.switch_workspace(fallback_id);
+            state.needs_redraw = true;
+        } else {
+            tracing::info!("last Emacs frame died, stopping");
+            state.loop_signal.stop();
+        }
+    }
+}
+
+/// Send ext-workspace-v1 protocol events reflecting current workspace
+/// state, then clean up dead protocol handles.
+pub(crate) fn refresh_workspace_state(state: &mut crate::EmskinState) {
+    let ws_ids = state.workspace.all_ids();
+
+    let ws_named: Vec<(u64, &str)> = ws_ids
+        .iter()
+        .map(|&id| {
+            let name: &str = if id == state.workspace.active_id {
+                &state.workspace.active_name
+            } else {
+                state
+                    .workspace
+                    .inactive
+                    .get(&id)
+                    .map(|ws| ws.name.as_str())
+                    .unwrap_or("")
+            };
+            (id, name)
+        })
+        .collect();
+
+    let ws_infos: Vec<crate::protocols::workspace::WorkspaceInfo> = ws_named
+        .iter()
+        .map(|&(id, name)| {
+            let display_name = if name.is_empty() {
+                format!("Workspace {id}")
+            } else {
+                name.to_string()
+            };
+            crate::protocols::workspace::WorkspaceInfo {
+                id,
+                name: display_name,
+                active: id == state.workspace.active_id,
+            }
+        })
+        .collect();
+    if let Some(output) = state.workspace.active_space.outputs().next().cloned() {
+        let dh = state.display_handle.clone();
+        state.workspace.protocol.refresh(&dh, &ws_infos, &output);
+    }
+    state.workspace.protocol.cleanup_dead();
+
+    let _ = ws_named;
+}
