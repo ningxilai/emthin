@@ -112,8 +112,8 @@ E2E entry: `cargo build -p emez && cargo test -p emskin`. **Two steps is a cargo
 
 - Nested Wayland compositor using smithay, hosting Emacs inside a winit window
 - First toplevel = Emacs (fullscreen), subsequent toplevels = **arbitrary embedded programs** (any Wayland or XWayland client) managed by AppManager. Not limited to EAF — any GTK/Qt/Electron/X11 app can be embedded as a child window whose geometry is controlled by Emacs via IPC.
-- IPC protocol: length-prefixed JSON over Unix socket. Emacs→compositor: set_geometry, close, set_visibility, prefix_done, set_focus, add_mirror, update_mirror_geometry, remove_mirror, promote_mirror. Compositor→Emacs: connected, surface_size, window_created, window_destroyed, title_changed, focus_view, xwayland_ready
-- Elisp client: split across `elisp/emskin.el` (entry + shared state), `emskin-ipc.el` (codec + connection + `emskin-connected-hook`), `emskin-app.el` (app lifecycle + geometry + mirrors + dispatch), `emskin-workspace.el` (workspace CRUD + frame mapping). Auto-connects via parent PID socket discovery. All files are embedded into the binary via `include_dir!` and extracted at runtime in standalone mode
+- IPC protocol: JSON-RPC 2.0 over Unix socket (`Content-Length: N\r\n\r\n` framing). All current messages are notifications (no `id`). Emacs→compositor: set_geometry, close, set_visibility, prefix_done, set_focus, add_mirror, update_mirror_geometry, remove_mirror, promote_mirror. Compositor→Emacs: connected, surface_size, window_created, window_destroyed, title_changed, focus_view, xwayland_ready
+- Elisp client: split across `elisp/emskin.el` (entry + shared state), `emskin-ipc.el` (`jsonrpc-process-connection` + notification dispatch + `emskin-connected-hook`), `emskin-app.el` (app lifecycle + geometry + mirrors + dispatch), `emskin-workspace.el` (workspace CRUD + frame mapping). Auto-connects via parent PID socket discovery. All files are embedded into the binary via `include_dir!` and extracted at runtime in standalone mode. Elisp dispatch uses `pcase` on method symbol (not hash-table lookup).
 - Mirror system: same embedded program displays in multiple Emacs windows. Source = first window (real surface), mirrors = subsequent windows (TextureRenderElement from same GPU texture). Elisp tracks source/mirror in `emskin--mirror-table`
 - Keyboard input: compositor detects Emacs prefix keys (C-x, C-c, M-x) via `input_intercept`, redirects focus to Emacs; `prefix_done` IPC restores focus. `set_focus` IPC for explicit focus control. Prefix state: `Option<Option<WlSurface>>` (outer None = inactive)
 - Focus: `SeatHandler::KeyboardFocus = KeyboardFocusTarget` enum (Window/Layer/Popup) in `focus.rs` — lets smithay's per-variant `KeyboardTarget` impl handle protocol specifics. Single-policy helper `EmskinState::auto_focus_new_window(window, window_id)` is the one entry `xdg_shell::new_toplevel` calls — respects `prefix_saved_focus`. On window destroy, fallback to `emacs_focus_target()` if `current_focus().is_none()`; Emacs's buffer MRU drives further recovery via `set_focus` IPC. X clients arrive through xwayland-satellite and present as ordinary Wayland clients, so there is no dedicated X11 focus plumbing in emskin itself — satellite handles ICCCM `SetInputFocus` / `WM_TAKE_FOCUS` and EWMH focus-state bits internally before translating to `wl_keyboard.enter`
@@ -150,7 +150,7 @@ E2E entry: `cargo build -p emez && cargo test -p emskin`. **Two steps is a cargo
 - `emskin-clipboard` uses independent `SelectionKind { Clipboard, Primary }` to stay smithay-free. The bridge layer (`crates/emskin/src/clipboard_bridge.rs`) converts to/from smithay's `SelectionTarget` via two extension traits (`SelectionTargetExt::to_kind` + `SelectionKindExt::to_target`) — orphan rules forbid `impl From` here since all three types are foreign to emskin, so extension traits (local to emskin) are the idiomatic escape hatch. Callsites in `handlers/mod.rs` `use crate::clipboard_bridge::SelectionTargetExt;` and call `target.to_kind()`.
 - X11-only async completion: the `X11ClipboardProxy` backend, on host paste requests, emits `HostSendRequest { completion: Some(AsyncCompletion { id, read_fd }) }` so the bridge layer can drain the pipe via calloop and call back into `ClipboardBackend::complete_outgoing(id, data)` for the backend to send `SelectionNotify`. Wayland backends emit `completion: None` — the default `complete_outgoing` impl is a no-op. Error path in the pipe reader still calls `complete_outgoing` with whatever was drained so `outgoing_requests[id]` never leaks and the X11 requestor always gets a reply.
 - IpcRect: shared `{x, y, w, h}` struct with `#[serde(flatten)]` — replaces repeated bare fields in SetGeometry, AddMirror, UpdateMirrorGeometry
-- Module layout: `lib.rs` (library entry), `tick.rs` (event loop body), `ipc/dispatch.rs` (IPC message handlers), `clipboard_bridge.rs` (smithay glue for the `emskin-clipboard` crate), `mirror_render.rs` (mirror texture rendering)
+- Module layout: `lib.rs` (library entry), `tick.rs` (event loop body), `ipc/connection.rs` (Content-Length framing), `ipc/jsonrpc.rs` (JSON-RPC 2.0 envelope), `ipc/dispatch.rs` (IPC message handlers → state methods), `ipc/messages.rs` (manual `from_jsonrpc`/`method_name`/`into_params_value`, no serde derives), `clipboard_bridge.rs` (smithay glue for the `emskin-clipboard` crate), `mirror_render.rs` (mirror texture rendering)
 
 ## Key Gotchas
 
@@ -217,10 +217,12 @@ E2E entry: `cargo build -p emez && cargo test -p emskin`. **Two steps is a cargo
 - `other-frame` (C-x 5 o): advised `:around` to send `switch_workspace` IPC before calling original.
 - New Emacs frame fullscreen: must send configure with `Fullscreen` state + output size in `new_toplevel`.
 - `set-window-scroll-bars`/`set-window-fringes`/`set-window-margins` unconditionally reset to 0 in `sync-frame` for embedded app windows.
+- Elisp error isolation: every boundary point (IPC dispatch, frame/buffer/window hooks, post-command, kill-buffer, timers) wrapped in `condition-case` with error logging. `emskin--sync-frame` also uses `unwind-protect` to ensure `emskin--next-view-id` always saves.
+- Elisp code style: direct imperative with cl-lib (no deferred thunks). All `*-thunks` factories removed in favor of straight-line blocks.
 - Clipboard startup guard: use `!self.ipc.is_connected()` instead of per-target bool flags.
 - Wayland child processes must have `WAYLAND_DISPLAY` explicitly set to `state.socket_name`.
 - Workspace switch must reset: `focus` (via `FocusState::reset_on_workspace_switch`), `ime` (via `ImeBridge::reset_on_workspace_switch`), `cursor_status`, pointer focus.
-- Wire-format quirk: `#[serde(rename_all = "snake_case")]` on `OutgoingMessage` turns `XWaylandReady` into `x_wayland_ready`.
+- Wire-format quirk: `OutgoingMessage::method_name()` maps `XWaylandReady → "x_wayland_ready"` (manual snake_case; no serde derives).
 - Layer shell destroy: only reclaim focus if `keyboard.current_focus() == destroyed surface`.
 
 ## Wayland Protocols Implemented
@@ -534,14 +536,15 @@ to deserve a comment, also add a bullet under the matching section.
   `# x-release-please-version`.
 - Release is `cargo release patch --execute` (or `minor` / explicit).
   That runs `git-cliff` → updates `CHANGELOG.md` → single `chore: release`
-  commit → tag → tag push triggers `.github/workflows/release.yml` →
-  cargo-aur → GitHub Release + AUR publish.
+  commit → tag → tag push.
 - Historical note: the repo migrated from release-please to
   cargo-release + git-cliff; don't re-introduce release-please config.
+  `.github/workflows/release.yml` was removed when the fork moved
+  to a separate upstream; release automation is manual from here on.
 
-## Local verification (matches CI)
+## Local verification
 
-Before pushing, run what `.github/workflows/ci.yml` runs:
+Before pushing, run:
 
 ```
 cargo fmt --all --check
