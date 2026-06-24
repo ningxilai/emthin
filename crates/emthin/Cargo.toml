@@ -17,7 +17,7 @@ smithay.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 winit_crate = { package = "winit", version = "0.30", default-features = false }
 # wayland-client still needed for the xdg_activation_v1 client helper in
 # main.rs::activate_main_surface_if_env_token. Clipboard backends live in
