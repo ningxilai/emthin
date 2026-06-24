@@ -410,7 +410,8 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
         (new-mirrors (plist-get diff :new-mirrors))
         thunks)
     (dolist (vid removals)
-      (push (lambda () (emskin--call* 'remove-mirror :window_id wid :view_id vid)) thunks))
+      (let ((v vid))
+        (push (lambda () (emskin--call* 'remove-mirror :window_id wid :view_id v)) thunks)))
     (when promote-vid
       (push (lambda () (emskin--call* 'promote-mirror :window_id wid :view_id promote-vid)) thunks))
     (dolist (pair additions)
