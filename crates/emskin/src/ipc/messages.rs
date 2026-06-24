@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 /// Geometry rectangle from Emacs IPC (logical pixels, Emacs-relative).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpcRect {
     pub x: i32,
     pub y: i32,
@@ -10,12 +8,10 @@ pub struct IpcRect {
 }
 
 /// Emacs → emskin
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug)]
 pub enum IncomingMessage {
     SetGeometry {
         window_id: u64,
-        #[serde(flatten)]
         rect: IpcRect,
     },
     Close {
@@ -35,13 +31,11 @@ pub enum IncomingMessage {
     AddMirror {
         window_id: u64,
         view_id: u64,
-        #[serde(flatten)]
         rect: IpcRect,
     },
     UpdateMirrorGeometry {
         window_id: u64,
         view_id: u64,
-        #[serde(flatten)]
         rect: IpcRect,
     },
     RemoveMirror {
@@ -56,7 +50,6 @@ pub enum IncomingMessage {
     /// Tell the compositor which surface should have keyboard focus.
     /// `window_id: None` means focus Emacs; `Some(id)` means focus that app.
     SetFocus {
-        #[serde(default)]
         window_id: Option<u64>,
     },
     /// Request the compositor to switch to the given workspace.
@@ -66,8 +59,7 @@ pub enum IncomingMessage {
 }
 
 /// emskin → Emacs
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum OutgoingMessage {
     Connected {
         version: &'static str,
@@ -112,83 +104,188 @@ pub enum OutgoingMessage {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Manual JSON-RPC conversion (no serde derive)
+// ---------------------------------------------------------------------------
+
+impl IncomingMessage {
+    pub fn from_jsonrpc(method: &str, params: &serde_json::Value) -> Result<Self, String> {
+        Ok(match method {
+            "set_geometry" => Self::SetGeometry {
+                window_id: params_get_u64(params, "window_id")?,
+                rect: IpcRect {
+                    x: params_get_i32(params, "x")?,
+                    y: params_get_i32(params, "y")?,
+                    w: params_get_i32(params, "w")?,
+                    h: params_get_i32(params, "h")?,
+                },
+            },
+            "close" => Self::Close {
+                window_id: params_get_u64(params, "window_id")?,
+            },
+            "set_visibility" => Self::SetVisibility {
+                window_id: params_get_u64(params, "window_id")?,
+                visible: params_get_bool(params, "visible")?,
+            },
+            "prefix_done" => Self::PrefixDone,
+            "prefix_clear" => Self::PrefixClear,
+            "add_mirror" => Self::AddMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+                rect: IpcRect {
+                    x: params_get_i32(params, "x")?,
+                    y: params_get_i32(params, "y")?,
+                    w: params_get_i32(params, "w")?,
+                    h: params_get_i32(params, "h")?,
+                },
+            },
+            "update_mirror_geometry" => Self::UpdateMirrorGeometry {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+                rect: IpcRect {
+                    x: params_get_i32(params, "x")?,
+                    y: params_get_i32(params, "y")?,
+                    w: params_get_i32(params, "w")?,
+                    h: params_get_i32(params, "h")?,
+                },
+            },
+            "remove_mirror" => Self::RemoveMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+            },
+            "promote_mirror" => Self::PromoteMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+            },
+            "set_focus" => Self::SetFocus {
+                window_id: params.get("window_id").and_then(|v| v.as_u64()),
+            },
+            "switch_workspace" => Self::SwitchWorkspace {
+                workspace_id: params_get_u64(params, "workspace_id")?,
+            },
+            other => return Err(format!("unknown IPC method: {other}")),
+        })
+    }
+}
+
+fn params_get_u64(params: &serde_json::Value, key: &str) -> Result<u64, String> {
+    params[key]
+        .as_u64()
+        .ok_or_else(|| format!("missing/invalid field '{key}'"))
+}
+
+fn params_get_i32(params: &serde_json::Value, key: &str) -> Result<i32, String> {
+    params[key]
+        .as_i64()
+        .ok_or_else(|| format!("missing/invalid field '{key}'"))
+        .map(|v| v as i32)
+}
+
+fn params_get_bool(params: &serde_json::Value, key: &str) -> Result<bool, String> {
+    params[key]
+        .as_bool()
+        .ok_or_else(|| format!("missing/invalid field '{key}'"))
+}
+
+impl OutgoingMessage {
+    pub fn method_name(&self) -> &'static str {
+        match self {
+            Self::Connected { .. } => "connected",
+            Self::WindowCreated { .. } => "window_created",
+            Self::WindowDestroyed { .. } => "window_destroyed",
+            Self::TitleChanged { .. } => "title_changed",
+            Self::SurfaceSize { .. } => "surface_size",
+            Self::FocusView { .. } => "focus_view",
+            Self::XWaylandReady { .. } => "x_wayland_ready",
+            Self::WorkspaceCreated { .. } => "workspace_created",
+            Self::WorkspaceSwitched { .. } => "workspace_switched",
+            Self::WorkspaceDestroyed { .. } => "workspace_destroyed",
+        }
+    }
+
+    pub fn into_params_value(self) -> serde_json::Value {
+        match self {
+            Self::Connected { version } => serde_json::json!({"version": version}),
+            Self::WindowCreated { window_id, title } => {
+                serde_json::json!({"window_id": window_id, "title": title})
+            }
+            Self::WindowDestroyed { window_id } => {
+                serde_json::json!({"window_id": window_id})
+            }
+            Self::TitleChanged { window_id, title } => {
+                serde_json::json!({"window_id": window_id, "title": title})
+            }
+            Self::SurfaceSize { width, height } => {
+                serde_json::json!({"width": width, "height": height})
+            }
+            Self::FocusView { window_id, view_id } => {
+                serde_json::json!({"window_id": window_id, "view_id": view_id})
+            }
+            Self::XWaylandReady { display } => serde_json::json!({"display": display}),
+            Self::WorkspaceCreated { workspace_id } => {
+                serde_json::json!({"workspace_id": workspace_id})
+            }
+            Self::WorkspaceSwitched { workspace_id } => {
+                serde_json::json!({"workspace_id": workspace_id})
+            }
+            Self::WorkspaceDestroyed { workspace_id } => {
+                serde_json::json!({"workspace_id": workspace_id})
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // --- IncomingMessage deserialization ---
-
     #[test]
     fn parses_set_geometry() {
-        let json = r#"{"type":"set_geometry","window_id":42,"x":10,"y":20,"w":800,"h":600}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"window_id":42,"x":10,"y":20,"w":800,"h":600});
+        let msg = IncomingMessage::from_jsonrpc("set_geometry", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SetGeometry {
                 window_id: 42,
-                rect: IpcRect {
-                    x: 10,
-                    y: 20,
-                    w: 800,
-                    h: 600,
-                },
+                rect: IpcRect { x: 10, y: 20, w: 800, h: 600 }
             }
         ));
     }
 
     #[test]
     fn parses_close() {
-        let json = r#"{"type":"close","window_id":7}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"window_id":7});
+        let msg = IncomingMessage::from_jsonrpc("close", &params).unwrap();
         assert!(matches!(msg, IncomingMessage::Close { window_id: 7 }));
     }
 
     #[test]
     fn parses_set_visibility() {
-        let json = r#"{"type":"set_visibility","window_id":3,"visible":false}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"window_id":3,"visible":false});
+        let msg = IncomingMessage::from_jsonrpc("set_visibility", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SetVisibility {
                 window_id: 3,
-                visible: false,
+                visible: false
             }
         ));
     }
 
     #[test]
     fn parses_prefix_done() {
-        let json = r#"{"type":"prefix_done"}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let msg =
+            IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
         assert!(matches!(msg, IncomingMessage::PrefixDone));
     }
 
     #[test]
     fn parses_add_mirror() {
-        let json = r#"{"type":"add_mirror","window_id":1,"view_id":2,"x":0,"y":0,"w":400,"h":300}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"window_id":1,"view_id":2,"x":0,"y":0,"w":400,"h":300});
+        let msg = IncomingMessage::from_jsonrpc("add_mirror", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::AddMirror {
-                window_id: 1,
-                view_id: 2,
-                rect: IpcRect {
-                    x: 0,
-                    y: 0,
-                    w: 400,
-                    h: 300,
-                },
-            }
-        ));
-    }
-
-    #[test]
-    fn parses_update_mirror_geometry() {
-        let json = r#"{"type":"update_mirror_geometry","window_id":1,"view_id":2,"x":10,"y":20,"w":500,"h":400}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            msg,
-            IncomingMessage::UpdateMirrorGeometry {
                 window_id: 1,
                 view_id: 2,
                 ..
@@ -197,35 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_remove_mirror() {
-        let json = r#"{"type":"remove_mirror","window_id":5,"view_id":3}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            msg,
-            IncomingMessage::RemoveMirror {
-                window_id: 5,
-                view_id: 3,
-            }
-        ));
-    }
-
-    #[test]
-    fn parses_promote_mirror() {
-        let json = r#"{"type":"promote_mirror","window_id":5,"view_id":3}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            msg,
-            IncomingMessage::PromoteMirror {
-                window_id: 5,
-                view_id: 3,
-            }
-        ));
-    }
-
-    #[test]
     fn parses_set_focus_with_window_id() {
-        let json = r#"{"type":"set_focus","window_id":9}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"window_id":9});
+        let msg = IncomingMessage::from_jsonrpc("set_focus", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SetFocus { window_id: Some(9) }
@@ -234,15 +305,15 @@ mod tests {
 
     #[test]
     fn parses_set_focus_without_window_id() {
-        let json = r#"{"type":"set_focus"}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({});
+        let msg = IncomingMessage::from_jsonrpc("set_focus", &params).unwrap();
         assert!(matches!(msg, IncomingMessage::SetFocus { window_id: None }));
     }
 
     #[test]
     fn parses_switch_workspace() {
-        let json = r#"{"type":"switch_workspace","workspace_id":5}"#;
-        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        let params = serde_json::json!({"workspace_id":5});
+        let msg = IncomingMessage::from_jsonrpc("switch_workspace", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SwitchWorkspace { workspace_id: 5 }
@@ -250,91 +321,59 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_message_type() {
-        let json = r#"{"type":"unknown_command"}"#;
-        let result = serde_json::from_str::<IncomingMessage>(json);
+    fn rejects_unknown_method() {
+        let result =
+            IncomingMessage::from_jsonrpc("unknown_command", &serde_json::json!({}));
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_missing_required_fields() {
-        let json = r#"{"type":"set_geometry","window_id":1}"#;
-        let result = serde_json::from_str::<IncomingMessage>(json);
+        let params = serde_json::json!({"window_id":1});
+        let result = IncomingMessage::from_jsonrpc("set_geometry", &params);
         assert!(result.is_err());
     }
 
-    // --- OutgoingMessage serialization ---
-
     #[test]
-    fn serializes_connected() {
-        let msg = OutgoingMessage::Connected { version: "0.1.0" };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"connected""#));
-        assert!(json.contains(r#""version":"0.1.0""#));
+    fn outgoing_method_name() {
+        assert_eq!(
+            OutgoingMessage::Connected { version: "0.1" }.method_name(),
+            "connected"
+        );
+        assert_eq!(
+            OutgoingMessage::WindowCreated {
+                window_id: 1,
+                title: "t".into()
+            }
+            .method_name(),
+            "window_created"
+        );
+        assert_eq!(
+            OutgoingMessage::XWaylandReady { display: 42 }.method_name(),
+            "x_wayland_ready"
+        );
+        assert_eq!(
+            OutgoingMessage::SurfaceSize {
+                width: 1920,
+                height: 1080
+            }
+            .method_name(),
+            "surface_size"
+        );
     }
 
     #[test]
-    fn serializes_window_created() {
-        let msg = OutgoingMessage::WindowCreated {
+    fn outgoing_into_params_value() {
+        let v = OutgoingMessage::Connected { version: "0.1" }.into_params_value();
+        assert_eq!(v["version"], "0.1");
+        let v = OutgoingMessage::WindowCreated {
             window_id: 42,
             title: "test".into(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"window_created""#));
-        assert!(json.contains(r#""window_id":42"#));
-        assert!(json.contains(r#""title":"test""#));
+        }
+        .into_params_value();
+        assert_eq!(v["window_id"], 42);
+        assert_eq!(v["title"], "test");
+        let v = OutgoingMessage::XWaylandReady { display: 99 }.into_params_value();
+        assert_eq!(v["display"], 99);
     }
-
-    #[test]
-    fn serializes_window_destroyed() {
-        let msg = OutgoingMessage::WindowDestroyed { window_id: 7 };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"window_destroyed""#));
-        assert!(json.contains(r#""window_id":7"#));
-    }
-
-    #[test]
-    fn serializes_surface_size() {
-        let msg = OutgoingMessage::SurfaceSize {
-            width: 1920,
-            height: 1080,
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"surface_size""#));
-        assert!(json.contains(r#""width":1920"#));
-        assert!(json.contains(r#""height":1080"#));
-    }
-
-    #[test]
-    fn serializes_focus_view() {
-        let msg = OutgoingMessage::FocusView {
-            window_id: 1,
-            view_id: 2,
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"focus_view""#));
-    }
-
-    #[test]
-    fn serializes_workspace_created() {
-        let msg = OutgoingMessage::WorkspaceCreated { workspace_id: 3 };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"workspace_created""#));
-        assert!(json.contains(r#""workspace_id":3"#));
-    }
-
-    #[test]
-    fn serializes_workspace_switched() {
-        let msg = OutgoingMessage::WorkspaceSwitched { workspace_id: 2 };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"workspace_switched""#));
-    }
-
-    #[test]
-    fn serializes_workspace_destroyed() {
-        let msg = OutgoingMessage::WorkspaceDestroyed { workspace_id: 1 };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"workspace_destroyed""#));
-    }
-
 }
