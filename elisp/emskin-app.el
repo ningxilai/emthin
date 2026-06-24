@@ -106,6 +106,11 @@ back to the generic `display-buffer' path.")
 ;; IPC call helpers
 ;; ---------------------------------------------------------------------------
 
+(defun emskin--symbol->snake (sym)
+  "Convert SYM name to snake_case string.
+E.g. `set-focus' -> \"set_focus\", `prefix-clear' -> \"prefix_clear\"."
+  (replace-regexp-in-string "-" "_" (symbol-name sym)))
+
 (defmacro emskin--call (method &rest plist)
   "Send a METHOD notification with alternating keyword-value PLIST.
 Each keyword is converted to a JSON field name by stripping the `:'
@@ -122,7 +127,7 @@ expands to
     (while plist
       (push `(cons ,(substring (symbol-name (pop plist)) 1) ,(pop plist)) pairs))
     `(emskin--send
-      (cons '(type . ,(symbol-name method))
+      (cons '(type . ,(emskin--symbol->snake method))
             (list ,@(nreverse pairs))))))
 
 (defun emskin--send-dynamic (method &rest alist-pairs)
@@ -137,7 +142,7 @@ Send a METHOD notification with alternating keyword-value PLIST."
   (let (pairs)
     (while plist
       (push (cons (substring (symbol-name (pop plist)) 1) (pop plist)) pairs))
-    (emskin--send (cons (cons 'type (symbol-name method))
+    (emskin--send (cons (cons 'type (emskin--symbol->snake method))
                         (nreverse pairs)))))
 
 (defun emskin--exec-effects (thunks)
