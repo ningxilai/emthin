@@ -161,6 +161,9 @@ Send a METHOD notification with alternating keyword-value PLIST."
          (emthin--sync-frame frame))))
     ('x_wayland_ready
      nil)
+    ;; Handled by emthin-workspace.el hooks — silence the catch-all.
+    ((or 'workspace_created 'workspace_switched 'workspace_destroyed)
+     nil)
     (_
      (message "emthin: unknown message type %s" method))))
 
