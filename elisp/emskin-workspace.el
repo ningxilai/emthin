@@ -82,13 +82,17 @@
 Clears geometry cache only for windows in the active frame, then
 delegates to `emskin--sync-frame'."
   (when-let* ((fr (emskin--active-frame)))
-    (walk-windows (lambda (win)
-                    (let ((buf (window-buffer win)))
-                      (when (buffer-local-value 'emskin--window-id buf)
-                        (with-current-buffer buf
-                          (setq-local emskin--last-geometry nil)))))
-                  nil fr)
-    (emskin--sync-frame fr)))
+    (condition-case err
+        (progn
+          (walk-windows (lambda (win)
+                          (let ((buf (window-buffer win)))
+                            (when (buffer-local-value 'emskin--window-id buf)
+                              (with-current-buffer buf
+                                (setq-local emskin--last-geometry nil)))))
+                        nil fr)
+          (emskin--sync-frame fr))
+      (error
+       (message "emskin: resync error: %s" err)))))
 
 (defun emskin--active-frame ()
   "Return the Emacs frame for the active workspace, or nil.
@@ -101,15 +105,21 @@ Uses the reverse mapping table for O(1) lookup."
 
 (defun emskin--after-make-frame (frame)
   "Queue FRAME for workspace association when a non-child frame is created."
-  (when (and emskin--process
-             emskin--active-workspace-id
-             (not (frame-parameter frame 'parent-frame)))
-    (setq emskin--pending-frame-queue
-          (nconc emskin--pending-frame-queue (list frame)))))
+  (condition-case err
+      (when (and emskin--process
+                 emskin--active-workspace-id
+                 (not (frame-parameter frame 'parent-frame)))
+        (setq emskin--pending-frame-queue
+              (nconc emskin--pending-frame-queue (list frame))))
+    (error
+     (message "emskin: after-make-frame error: %s" err))))
 
 (defun emskin--delete-frame-hook (frame)
   "Clean up workspace mapping when a frame is deleted."
-  (emskin--unmap-frame frame))
+  (condition-case err
+      (emskin--unmap-frame frame)
+    (error
+     (message "emskin: delete-frame error: %s" err))))
 
 ;; ---------------------------------------------------------------------------
 ;; Focus-change driven workspace switch
@@ -119,12 +129,15 @@ Uses the reverse mapping table for O(1) lookup."
   "Detect frame switch and request compositor workspace switch."
   (when (and emskin--process
              (not emskin--workspace-switch-suppressed))
-    (let* ((frame (selected-frame))
-           (ws-id (gethash frame emskin--frame-workspace-table)))
-      (when (and ws-id
-                  (not (eql ws-id emskin--active-workspace-id)))
-        (emskin--suppress-workspace-switch 0.2)
-        (emskin--call* 'switch-workspace :workspace_id ws-id)))))
+    (condition-case err
+        (let* ((frame (selected-frame))
+               (ws-id (gethash frame emskin--frame-workspace-table)))
+          (when (and ws-id
+                     (not (eql ws-id emskin--active-workspace-id)))
+            (emskin--suppress-workspace-switch 0.2)
+            (emskin--call* 'switch-workspace :workspace_id ws-id)))
+      (error
+       (message "emskin: after-focus-change error: %s" err)))))
 
 ;; ---------------------------------------------------------------------------
 ;; other-frame advice

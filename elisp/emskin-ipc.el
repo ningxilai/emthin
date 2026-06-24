@@ -104,7 +104,10 @@ to snake for the wire format).  PARAMS is a plist suitable for
 
 (defun emskin--dispatch-notification (_conn method params)
   "Dispatch incoming JSON-RPC notification METHOD with PARAMS."
-  (run-hook-with-args 'emskin--message-hook method params))
+  (condition-case err
+      (run-hook-with-args 'emskin--message-hook method params)
+    (error
+     (message "emskin: notification dispatch error (%s): %s" method err))))
 
 (provide 'emskin-ipc)
 ;;; emskin-ipc.el ends here

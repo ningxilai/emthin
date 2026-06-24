@@ -172,31 +172,34 @@ Send a METHOD notification with alternating keyword-value PLIST."
 
 (defun emskin--on-window-created (window-id title)
   "Create/display a buffer for the new embedded app and send initial geometry."
-  (let* ((buf-name (format "*emskin: %s*" (if (string-empty-p title) "app" title)))
-         (buf (generate-new-buffer buf-name)))
-    (with-current-buffer buf
-      (setq-local emskin--window-id window-id)
-      (setq-local mode-name "emskin")
-      (setq-local buffer-read-only t)
-      (setq-local left-fringe-width 0)
-      (setq-local right-fringe-width 0)
-      (setq-local left-margin-width 0)
-      (setq-local right-margin-width 0)
-      (setq-local cursor-type nil)
-      (add-hook 'kill-buffer-hook #'emskin--kill-buffer-hook nil t)
-      (add-hook 'post-command-hook #'emskin--post-command-prefix-done nil t))
-    (let ((target (emskin--take-app-target-window)))
-      (if target
-          (set-window-buffer target buf)
-        (display-buffer buf '((display-buffer-pop-up-window
-                               display-buffer-use-some-window)
-                              (inhibit-same-window . t)
-                              (reusable-frames . nil)))))
-    (when-let* ((win (get-buffer-window buf t)))
-      (set-window-scroll-bars win 0 nil 0 nil)
-      (emskin--report-geometry window-id win))
-    (emskin--sync-focus)
-    (message "emskin: embedded app ready (id=%s)" window-id)))
+  (condition-case err
+      (let* ((buf-name (format "*emskin: %s*" (if (string-empty-p title) "app" title)))
+             (buf (generate-new-buffer buf-name)))
+        (with-current-buffer buf
+          (setq-local emskin--window-id window-id)
+          (setq-local mode-name "emskin")
+          (setq-local buffer-read-only t)
+          (setq-local left-fringe-width 0)
+          (setq-local right-fringe-width 0)
+          (setq-local left-margin-width 0)
+          (setq-local right-margin-width 0)
+          (setq-local cursor-type nil)
+          (add-hook 'kill-buffer-hook #'emskin--kill-buffer-hook nil t)
+          (add-hook 'post-command-hook #'emskin--post-command-prefix-done nil t))
+        (let ((target (emskin--take-app-target-window)))
+          (if target
+              (set-window-buffer target buf)
+            (display-buffer buf '((display-buffer-pop-up-window
+                                   display-buffer-use-some-window)
+                                  (inhibit-same-window . t)
+                                  (reusable-frames . nil)))))
+        (when-let* ((win (get-buffer-window buf t)))
+          (set-window-scroll-bars win 0 nil 0 nil)
+          (emskin--report-geometry window-id win))
+        (emskin--sync-focus)
+        (message "emskin: embedded app ready (id=%s)" window-id))
+    (error
+     (message "emskin: window-created error (id=%s): %s" window-id err))))
 
 (defun emskin--find-buffer (window-id)
   "Return the buffer whose `emskin--window-id' equals WINDOW-ID, or nil."
@@ -206,20 +209,23 @@ Send a METHOD notification with alternating keyword-value PLIST."
 
 (defun emskin--on-window-destroyed (window-id)
   "Close all Emacs windows/buffer for WINDOW-ID and restore focus."
-  (when-let* ((buf (emskin--find-buffer window-id)))
-    (with-current-buffer buf
-      (setq-local emskin--window-id nil))
-    (dolist (win (reverse (get-buffer-window-list buf nil t)))
-      (when (window-deletable-p win)
-        (delete-window win)))
-    (kill-buffer buf)
-    (remhash window-id emskin--mirror-table)
-    (let ((next-wid (buffer-local-value 'emskin--window-id
-                                        (window-buffer (selected-window)))))
-      (if next-wid
-          (emskin--call set-focus :window_id next-wid)
-        (emskin--call set-focus)))
-    (message "emskin: window %s destroyed" window-id)))
+  (condition-case err
+      (when-let* ((buf (emskin--find-buffer window-id)))
+        (with-current-buffer buf
+          (setq-local emskin--window-id nil))
+        (dolist (win (reverse (get-buffer-window-list buf nil t)))
+          (when (window-deletable-p win)
+            (delete-window win)))
+        (kill-buffer buf)
+        (remhash window-id emskin--mirror-table)
+        (let ((next-wid (buffer-local-value 'emskin--window-id
+                                            (window-buffer (selected-window)))))
+          (if next-wid
+              (emskin--call set-focus :window_id next-wid)
+            (emskin--call set-focus)))
+        (message "emskin: window %s destroyed" window-id))
+    (error
+     (message "emskin: window-destroyed error (id=%s): %s" window-id err))))
 
 (defun emskin--on-title-changed (window-id title)
   "Rename the embedded app buffer when the app title changes."
@@ -244,16 +250,22 @@ VIEW-ID 0 means the source window; otherwise look up the mirror alist."
 
 (defun emskin--kill-buffer-hook ()
   "Notify emskin to close the app when its Emacs buffer is killed."
-  (when emskin--window-id
-    (emskin--call close :window_id emskin--window-id)))
+  (condition-case err
+      (when emskin--window-id
+        (emskin--call close :window_id emskin--window-id))
+    (error
+     (message "emskin: kill-buffer-hook error: %s" err))))
 
 (defun emskin--post-command-prefix-done ()
   "After a command completes in an embedded app buffer, ask the
 compositor to restore keyboard focus to the embedded app (clearing
 prefix state along the way). Registered buffer-locally — only fires
 when the post-command tick runs while the app buffer is still current."
-  (when emskin--process
-    (emskin--call prefix-done)))
+  (condition-case err
+      (when emskin--process
+        (emskin--call prefix-done))
+    (error
+     (message "emskin: prefix-done error: %s" err))))
 
 (defun emskin--post-command-prefix-clear ()
   "Clear the compositor's `prefix_active' flag after every Emacs
@@ -268,8 +280,11 @@ would leave host IME disabled until the user clicks out and back.
 Unlike `prefix_done', this signal does NOT restore focus — focus
 follows whatever Emacs's prefix command did. The IPC handler is a
 no-op when no prefix is active, so per-command firing is cheap."
-  (when emskin--process
-    (emskin--call prefix-clear)))
+  (condition-case err
+      (when emskin--process
+        (emskin--call prefix-clear))
+    (error
+     (message "emskin: prefix-clear error: %s" err))))
 
 (add-hook 'post-command-hook #'emskin--post-command-prefix-clear)
 
@@ -374,25 +389,28 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
 
 (defun emskin--sync-mirrors (wid diff)
   "Apply mirror DIFF plist for WID synchronously."
-  (let ((source-win (plist-get diff :source-win))
-        (promote-vid (plist-get diff :promote-vid))
-        (removals (plist-get diff :mirror-removals))
-        (additions (plist-get diff :mirror-additions))
-        (updates (plist-get diff :mirror-updates))
-        (new-mirrors (plist-get diff :new-mirrors)))
-    (dolist (vid removals)
-      (emskin--call* 'remove-mirror :window_id wid :view_id vid))
-    (when promote-vid
-      (emskin--call* 'promote-mirror :window_id wid :view_id promote-vid))
-    (dolist (pair additions)
-      (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "add_mirror"))
-    (dolist (pair updates)
-      (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "update_mirror_geometry"))
-    (when source-win
-      (emskin--report-geometry wid source-win))
-    (if source-win
-        (puthash wid new-mirrors emskin--mirror-table)
-      (remhash wid emskin--mirror-table))))
+  (condition-case err
+      (let ((source-win (plist-get diff :source-win))
+            (promote-vid (plist-get diff :promote-vid))
+            (removals (plist-get diff :mirror-removals))
+            (additions (plist-get diff :mirror-additions))
+            (updates (plist-get diff :mirror-updates))
+            (new-mirrors (plist-get diff :new-mirrors)))
+        (dolist (vid removals)
+          (emskin--call* 'remove-mirror :window_id wid :view_id vid))
+        (when promote-vid
+          (emskin--call* 'promote-mirror :window_id wid :view_id promote-vid))
+        (dolist (pair additions)
+          (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "add_mirror"))
+        (dolist (pair updates)
+          (emskin--send-mirror-geometry* wid (car pair) (cdr pair) "update_mirror_geometry"))
+        (when source-win
+          (emskin--report-geometry wid source-win))
+        (if source-win
+            (puthash wid new-mirrors emskin--mirror-table)
+          (remhash wid emskin--mirror-table)))
+    (error
+     (message "emskin: mirror sync error for window %s: %s" wid err))))
 
 (defun emskin--report-geometry (window-id window)
   "Send set_geometry for WINDOW-ID if geometry changed."
@@ -424,37 +442,44 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
       (when (eql ws-id emskin--active-workspace-id)
         (let ((wid-wins (emskin--wid-wins-data frame))
               (next-view-id emskin--next-view-id))
-          ;; 1. Window decorations
-          (ignore-errors
-            (maphash (lambda (_wid wins)
-                       (dolist (win wins)
-                         (set-window-scroll-bars win 0 nil 0 nil)
-                         (set-window-fringes win 0 0)
-                         (set-window-margins win 0 0)))
-                     wid-wins))
-          ;; 2. Per-buffer sync (visibility, geometry, mirrors)
-          (ignore-errors
-            (dolist (buf (buffer-list))
-              (when-let* ((wid (buffer-local-value 'emskin--window-id buf)))
-                (let* ((wins (gethash wid wid-wins))
-                       (now-visible (and wins t))
-                       (was-visible (buffer-local-value 'emskin--visible buf))
-                       (prev-state (gethash wid emskin--mirror-table))
-                       (mirror-result (emskin--mirror-diff
-                                       wins (car prev-state) (cdr prev-state)
-                                       next-view-id)))
-                  (setq next-view-id (cdr mirror-result))
-                  ;; Visibility
-                  (unless (eq now-visible was-visible)
-                    (with-current-buffer buf
-                      (setq emskin--visible now-visible))
-                    (emskin--call* 'set-visibility
-                                   :window_id wid
-                                   :visible (if now-visible t :json-false)))
-                  ;; Mirrors
-                  (emskin--sync-mirrors wid (car mirror-result))))))
-          ;; 3. Save updated view-id counter
-          (setq emskin--next-view-id next-view-id))))))
+          (unwind-protect
+              (progn
+                ;; 1. Window decorations
+                (condition-case err
+                    (maphash (lambda (_wid wins)
+                               (dolist (win wins)
+                                 (set-window-scroll-bars win 0 nil 0 nil)
+                                 (set-window-fringes win 0 0)
+                                 (set-window-margins win 0 0)))
+                             wid-wins)
+                  (error
+                   (message "emskin: decoration error: %s" err)))
+                ;; 2. Per-buffer sync (visibility, geometry, mirrors)
+                (condition-case err
+                    (dolist (buf (buffer-list))
+                      (when-let* ((wid (buffer-local-value 'emskin--window-id buf)))
+                        (let* ((wins (gethash wid wid-wins))
+                               (now-visible (and wins t))
+                               (was-visible (buffer-local-value 'emskin--visible buf))
+                               (prev-state (gethash wid emskin--mirror-table))
+                               (mirror-result (emskin--mirror-diff
+                                               wins (car prev-state) (cdr prev-state)
+                                               next-view-id)))
+                          (setq next-view-id (cdr mirror-result))
+                          ;; Visibility
+                          (unless (eq now-visible was-visible)
+                            (with-current-buffer buf
+                              (setq emskin--visible now-visible))
+                            (emskin--call* 'set-visibility
+                                           :window_id wid
+                                           :visible (if now-visible t :json-false)))
+                          ;; Mirrors
+                          (emskin--sync-mirrors wid (car mirror-result)))))
+                  (error
+                   (message "emskin: per-buffer sync error: %s" err)))
+                )
+            ;; 3. Always save counter (unwind)
+            (setq emskin--next-view-id next-view-id)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Mirror promotion (interactive)
@@ -496,13 +521,16 @@ position; the old source window becomes a mirror in its place."
 (defun emskin--sync-focus (&optional _frame)
   "Sync focus if the focused window's app changed."
   (when emskin--process
-    (let ((wid (buffer-local-value 'emskin--window-id
-                                    (window-buffer (selected-window)))))
-      (unless (eq wid emskin--last-focused-wid)
-        (setq emskin--last-focused-wid wid)
-        (if wid
-            (emskin--call* 'set-focus :window_id wid)
-          (emskin--call* 'set-focus))))))
+    (condition-case err
+        (let ((wid (buffer-local-value 'emskin--window-id
+                                        (window-buffer (selected-window)))))
+          (unless (eq wid emskin--last-focused-wid)
+            (setq emskin--last-focused-wid wid)
+            (if wid
+                (emskin--call* 'set-focus :window_id wid)
+              (emskin--call* 'set-focus))))
+      (error
+       (message "emskin: focus sync error: %s" err)))))
 
 (add-hook 'window-selection-change-functions #'emskin--sync-focus)
 
