@@ -1,5 +1,6 @@
 mod connection;
 pub mod dispatch;
+pub mod jsonrpc;
 pub mod messages;
 
 use std::os::unix::net::UnixListener;
