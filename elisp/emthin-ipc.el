@@ -1,0 +1,113 @@
+;;; emthin-ipc.el --- IPC connection and protocol for emthin  -*- lexical-binding: t; -*-
+
+(require 'jsonrpc)
+
+;; ---------------------------------------------------------------------------
+;; IPC connection state
+;; ---------------------------------------------------------------------------
+
+(defvar emthin--jsonrpc-conn nil
+  "JSON-RPC connection to emthin compositor.")
+
+(defvar emthin--process nil
+  "Non-nil while the IPC connection is active.")
+
+(defvar emthin-ipc-path nil
+  "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
+
+;; ---------------------------------------------------------------------------
+;; Hooks
+;; ---------------------------------------------------------------------------
+
+(defvar emthin--message-hook nil
+  "Hook run with (METHOD PARAMS) for each incoming JSON-RPC notification.")
+
+(defvar emthin-connected-hook nil
+  "Hook run after the IPC connection to emthin is (re-)established.")
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(defun emthin--kebab->snake (sym)
+  "Convert SYM from kebab-case to snake_case.
+E.g., `set-focus' → `set_focus'.  No-op if already snake_case."
+  (let ((name (symbol-name sym)))
+    (if (string-search "-" name)
+        (intern (string-replace "-" "_" name))
+      sym)))
+
+;; ---------------------------------------------------------------------------
+;; Sending
+;; ---------------------------------------------------------------------------
+
+(defun emthin--send (method params)
+  "Send JSON-RPC notification METHOD with PARAMS.
+METHOD is a kebab-case or snake_case symbol (kebab converted
+to snake for the wire format).  PARAMS is a plist suitable for
+`json-serialize'."
+  (when emthin--jsonrpc-conn
+    (jsonrpc-notify emthin--jsonrpc-conn
+                     (emthin--kebab->snake method) params)))
+
+;; ---------------------------------------------------------------------------
+;; Socket discovery
+;; ---------------------------------------------------------------------------
+
+(defun emthin--ipc-path ()
+  "Return the IPC socket path, auto-discovering via parent PID."
+  (or emthin-ipc-path
+      (with-temp-buffer
+        (insert-file-contents-literally
+         (format "/proc/%d/status" (emacs-pid)))
+        (goto-char (point-min))
+        (let ((ppid (and (re-search-forward "^PPid:\t\\([0-9]+\\)" nil t)
+                         (match-string 1))))
+          (format "%s/emthin-%s.ipc"
+                  (or (getenv "XDG_RUNTIME_DIR") "/tmp")
+                  ppid)))))
+
+;; ---------------------------------------------------------------------------
+;; Connection
+;; ---------------------------------------------------------------------------
+
+(defun emthin-connect ()
+  "Connect to the emthin IPC socket (auto-discovers path)."
+  (interactive)
+  ;; Clean up stale connection
+  (when emthin--jsonrpc-conn
+    (jsonrpc-shutdown emthin--jsonrpc-conn)
+    (setq emthin--jsonrpc-conn nil
+          emthin--process nil))
+  (let* ((path (emthin--ipc-path))
+         (proc (condition-case err
+                   (make-network-process
+                    :name "emthin-ipc"
+                    :family 'local
+                    :service path
+                    :coding 'binary)
+                 (error
+                  (message "emthin: failed to connect to %s: %s" path err)
+                  nil))))
+    (when proc
+      (setq emthin--jsonrpc-conn
+            (jsonrpc-process-connection
+             :process proc
+             :notification-dispatcher #'emthin--dispatch-notification
+             :on-shutdown
+             (lambda (_c)
+               (message "emthin: IPC disconnected")
+               (setq emthin--jsonrpc-conn nil
+                     emthin--process nil))))
+      (setq emthin--process t)
+      (message "emthin: connecting to %s" path))))
+
+(defun emthin--dispatch-notification (_conn method params)
+  "Dispatch incoming JSON-RPC notification METHOD with PARAMS."
+  (condition-case err
+      (run-hook-with-args 'emthin--message-hook method params)
+    (error
+     (message "emthin: notification dispatch error (%s): %s" method err))))
+
+(provide 'emthin-ipc)
+;;; emthin-ipc.el ends here

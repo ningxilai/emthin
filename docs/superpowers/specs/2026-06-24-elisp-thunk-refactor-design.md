@@ -2,14 +2,14 @@
 
 ## Goal
 
-Replace the deferred thunk pattern (`*-thunks` factories + `emskin--exec-effects`)
+Replace the deferred thunk pattern (`*-thunks` factories + `emthin--exec-effects`)
 with direct imperative calls, using `cl-lib` (`cl-flet`/`cl-labels`) for local
 function organization where appropriate.
 
 ## Motivation
 
 The current pattern collects lambdas into lists (thunks) and executes them
-sequentially via `emskin--exec-effects`. This is unnecessary indirection for
+sequentially via `emthin--exec-effects`. This is unnecessary indirection for
 side-effect code — the operations are always executed immediately after
 collection, there's no genuine laziness or memoization. The collection +
 `append` + `nreverse` + `dolist` machinery adds ~40 lines of boilerplate
@@ -19,37 +19,37 @@ with no benefit.
 
 Three files, ~50 lines net removal:
 
-### `emskin-app.el`
+### `emthin-app.el`
 
 | Current | → | After |
 |---|---|---|
-| `emskin--exec-effects` | remove | |
-| `emskin--report-geometry-thunks` | inline into sole caller `emskin--report-geometry`; merge error handling | |
-| `emskin--mirror-thunks` | inline into `emskin--sync-frame` body | |
-| `emskin--wid-wins-decoration-thunks` | inline into `emskin--sync-frame` body | |
-| `emskin--sync-focus-thunks` | inline into `emskin--sync-focus` body | |
-| `emskin--sync-frame` body | straight-line: decoration → per-buffer sync → counter save | |
+| `emthin--exec-effects` | remove | |
+| `emthin--report-geometry-thunks` | inline into sole caller `emthin--report-geometry`; merge error handling | |
+| `emthin--mirror-thunks` | inline into `emthin--sync-frame` body | |
+| `emthin--wid-wins-decoration-thunks` | inline into `emthin--sync-frame` body | |
+| `emthin--sync-focus-thunks` | inline into `emthin--sync-focus` body | |
+| `emthin--sync-frame` body | straight-line: decoration → per-buffer sync → counter save | |
 
-### `emskin-workspace.el`
-
-| Current | → | After |
-|---|---|---|
-| `emskin--suppress-workspace-switch-thunks` | rename to `emskin--suppress-workspace-switch`; execute directly instead of returning thunks | |
-
-Three callers of `emskin--suppress-workspace-switch-thunks` update to new
-signature and remove surrounding `emskin--exec-effects` / `append`.
-
-### `emskin-ipc.el`
+### `emthin-workspace.el`
 
 | Current | → | After |
 |---|---|---|
-| `emskin--send-thunk` | remove (dead code, defined but never called) | |
+| `emthin--suppress-workspace-switch-thunks` | rename to `emthin--suppress-workspace-switch`; execute directly instead of returning thunks | |
+
+Three callers of `emthin--suppress-workspace-switch-thunks` update to new
+signature and remove surrounding `emthin--exec-effects` / `append`.
+
+### `emthin-ipc.el`
+
+| Current | → | After |
+|---|---|---|
+| `emthin--send-thunk` | remove (dead code, defined but never called) | |
 
 ## Error isolation
 
 Current thunk pattern naturally isolates errors (one thunk fails, rest still
 run). Replace with `ignore-errors` wrappers at the group level in
-`emskin--sync-frame` for each operation group (decoration / per-buffer sync).
+`emthin--sync-frame` for each operation group (decoration / per-buffer sync).
 
 ## Verification
 

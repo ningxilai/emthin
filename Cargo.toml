@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/emskin", "crates/emskin-clipboard", "crates/emskin-dbus"]
+members = ["crates/emthin", "crates/emthin-clipboard", "crates/emthin-dbus"]
 # Guard against rust-analyzer's scratch target directory (which it may create
 # under crates/target/rust-analyzer/) being picked up as a workspace member.
 exclude = ["crates/target"]
@@ -10,7 +10,7 @@ version = "0.3.12"
 edition = "2021"
 authors = ["Lee <loyalpartner@163.com>"]
 license = "GPL-3.0"
-repository = "https://github.com/emskin/emskin"
+repository = "https://github.com/emthin/emthin"
 
 [workspace.dependencies]
 smithay = { git = "https://github.com/emskin/smithay.git", branch = "emskin-patches", default-features = false, features = [

@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-24
 **Status:** Draft
-**Drivers:** emskin → Emacs IPC 自定义协议 → JSON-RPC 2.0
+**Drivers:** emthin → Emacs IPC 自定义协议 → JSON-RPC 2.0
 
 ## Motivation
 
@@ -22,7 +22,7 @@
 ## Architecture
 
 ```
-Emacs (jsonrpc.el)                    emskin (calloop)
+Emacs (jsonrpc.el)                    emthin (calloop)
 ──────────────────                    ────────────────
 jsonrpc-process-connection            IpcServer
   │   Content-Length: N\r\n\r\n         │
@@ -172,64 +172,64 @@ pub fn serialize_outgoing(msg: &OutgoingMessage) -> Result<Vec<u8>, Error> {
 
 ## Emacs 端实现
 
-### emskin-ipc.el 重写
+### emthin-ipc.el 重写
 
 从 ~160 行缩至 ~40 行。
 
 ```elisp
 ;; 状态: 只保留 conn 引用
-(defvar emskin--jsonrpc-conn nil
+(defvar emthin--jsonrpc-conn nil
   "JSON-RPC connection object.")
 
-(defvar emskin-ipc-path nil
+(defvar emthin-ipc-path nil
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
 
-(defvar emskin--message-hook nil
+(defvar emthin--message-hook nil
   "Hook run with (METHOD PARAMS) on each incoming notification.")
 
-(defvar emskin-connected-hook nil
+(defvar emthin-connected-hook nil
   "Hook run after the IPC connection is established.")
 
 ;; 发送: 纯函数式通知
-(defun emskin--send (method params)
+(defun emthin--send (method params)
   "Send JSON-RPC notification METHOD with PARAMS."
-  (when emskin--jsonrpc-conn
-    (jsonrpc-notify emskin--jsonrpc-conn method params)))
+  (when emthin--jsonrpc-conn
+    (jsonrpc-notify emthin--jsonrpc-conn method params)))
 
-(defun emskin--send-thunk (method params)
+(defun emthin--send-thunk (method params)
   "Return thunk that sends METHOD+PARAMS when called."
-  (let ((conn emskin--jsonrpc-conn))
+  (let ((conn emthin--jsonrpc-conn))
     (lambda ()
       (when conn (jsonrpc-notify conn method params)))))
 
 ;; 连接
-(defun emskin-connect ()
+(defun emthin-connect ()
   (interactive)
-  (when emskin--jsonrpc-conn ...) ;; 清理旧连接
-  (let* ((path (emskin--ipc-path))
+  (when emthin--jsonrpc-conn ...) ;; 清理旧连接
+  (let* ((path (emthin--ipc-path))
          (proc (make-network-process
-                :name "emskin-ipc"
+                :name "emthin-ipc"
                 :family 'local
                 :service path
                 :coding 'binary)))
-    (setq emskin--jsonrpc-conn
+    (setq emthin--jsonrpc-conn
           (make-jsonrpc-process-connection
            :process proc
-           :on-notification #'emskin--dispatch-notification
+           :on-notification #'emthin--dispatch-notification
            :on-shutdown
            (lambda (_c)
-             (message "emskin: IPC disconnected")
-             (setq emskin--jsonrpc-conn nil))))
-    (message "emskin: connecting to %s" path)))
+             (message "emthin: IPC disconnected")
+             (setq emthin--jsonrpc-conn nil))))
+    (message "emthin: connecting to %s" path)))
 
 ;; notification dispatch → 现有 hook 系统
-(defun emskin--dispatch-notification (_conn method params)
-  (run-hook-with-args 'emskin--message-hook method params))
+(defun emthin--dispatch-notification (_conn method params)
+  (run-hook-with-args 'emthin--message-hook method params))
 ```
 
 ### Dispatch 适配
 
-`emskin-app.el` 和 `emskin-workspace.el` 中的 handler 从 hash-table 取 field 改为 plist：
+`emthin-app.el` 和 `emthin-workspace.el` 中的 handler 从 hash-table 取 field 改为 plist：
 
 ```elisp
 ;; 旧: (gethash "window_id" msg)
@@ -246,7 +246,7 @@ pub fn serialize_outgoing(msg: &OutgoingMessage) -> Result<Vec<u8>, Error> {
 
 ### Elisp 侧
 
-- `tests/elisp/emskin-app-tests.el` 中有 `emskin--on-window-destroyed` / `-on-window-created` 测试
+- `tests/elisp/emthin-app-tests.el` 中有 `emthin--on-window-destroyed` / `-on-window-created` 测试
 - Dispatch 从 hash-table 改为 plist → 更新测试参数格式
 
 ## 过渡方案
@@ -254,10 +254,10 @@ pub fn serialize_outgoing(msg: &OutgoingMessage) -> Result<Vec<u8>, Error> {
 单次提交，同时改 Rust 和 Elisp 侧——wire format 不兼容新旧版本。
 
 1. 改 Rust: connection.rs → jsonrpc.rs → messages.rs
-2. 改 Elisp: emskin-ipc.el → dispatch 适配
+2. 改 Elisp: emthin-ipc.el → dispatch 适配
 3. 更新测试
 4. cargo clippy + byte-compile 验证
-5. `cargo test -p emskin` 验证 IPC 测试
+5. `cargo test -p emthin` 验证 IPC 测试
 
 ## 未来
 

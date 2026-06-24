@@ -11,7 +11,7 @@ consolidate-commits = true
 # Must be the string "workspace", not bool `true`. Any crate whose
 # version is `version.workspace = true` gets automatically placed in
 # the group `"workspace"` by cargo-release (see config.rs:1038). Our
-# `emskin` crate uses a literal version (cargo-aur 0.x limitation),
+# `emthin` crate uses a literal version (cargo-aur 0.x limitation),
 # so we need to put it in the same group explicitly — otherwise
 # `find_shared_versions` sees two groups, returns None, and
 # `{{version}}` in the consolidated commit message renders as an
@@ -24,8 +24,8 @@ shared-version = "workspace"
 # so no pre-release-replacements are needed here.
 #
 # The pre-release-hook for git-cliff lives in
-# crates/emskin/Cargo.toml's [package.metadata.release] instead of here,
+# crates/emthin/Cargo.toml's [package.metadata.release] instead of here,
 # because cargo-release runs hooks with the package root as CWD. Scoping
-# it to the emskin crate gives git-cliff a predictable relative path
+# it to the emthin crate gives git-cliff a predictable relative path
 # (`../../CHANGELOG.md`) and ensures the hook fires exactly once per
 # release, not once per workspace member.

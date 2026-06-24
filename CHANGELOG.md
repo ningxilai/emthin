@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to emskin are documented here.
+All notable changes to emthin are documented here.
 Generated from conventional commits via git-cliff.
 
 ## [0.3.12] - 2026-04-27
@@ -8,7 +8,7 @@ Generated from conventional commits via git-cliff.
 ### Bug Fixes
 - Re-evaluate host IME after every tick to catch late text_input bind (#62)
 - Reclaim stale X11 display locks on startup
-- Set app_id / WM_CLASS to emskin
+- Set app_id / WM_CLASS to emthin
 
 ### Features
 - In-process fcitx5 broker + ImeOwner state machine (#68)
@@ -62,21 +62,21 @@ Generated from conventional commits via git-cliff.
 - Wl_data_device fallback for KDE/GNOME hosts
 
 ### Refactor
-- Extract emskin-clipboard as smithay-free crate
+- Extract emthin-clipboard as smithay-free crate
 ## [0.3.9] - 2026-04-19
 
 ### Bug Fixes
-- Regex-replace emskin literal version via cargo-release
+- Regex-replace emthin literal version via cargo-release
 ## [0.3.8] - 2026-04-19
 
 ### Bug Fixes
-- Bump emskin literal + join workspace shared-version group
+- Bump emthin literal + join workspace shared-version group
 ## [0.3.7] - 2026-04-19
 
 ### Bug Fixes
 - Capture XWayland stderr to xwayland.log
 - Drain write buffer synchronously on EAGAIN
-- Bump emskin crate version to match workspace 0.3.6
+- Bump emthin crate version to match workspace 0.3.6
 
 ### CI
 - Install libegl1 / libgles2 for Ubuntu 24.04 Xwayland
@@ -207,7 +207,7 @@ Generated from conventional commits via git-cliff.
 - Add Smithay acknowledgement to README
 
 ### Refactor
-- Split emskin.el into 5 domain modules
+- Split emthin.el into 5 domain modules
 - Group 17 smithay protocol fields into WaylandState sub-struct
 - Extract mirror rendering to mirror_render.rs
 - Extract mirror_hit_test as pure function with 8 new tests
@@ -273,7 +273,7 @@ Generated from conventional commits via git-cliff.
 
 ### Features
 - Add letter-by-letter splash screen animation
-- Set XDG_SESSION_DESKTOP=emskin for child process
+- Set XDG_SESSION_DESKTOP=emthin for child process
 - Redesign workspace bar with pill buttons and center title
 - Handle fullscreen/unfullscreen requests for embedded apps
 - Add multi-workspace support with ext-workspace-v1 protocol
@@ -309,10 +309,10 @@ Generated from conventional commits via git-cliff.
 - Fix layer-shell client startup latency
 
 ### Refactor
-- Rename buffer prefix from *eaf:* to *emskin:*
+- Rename buffer prefix from *eaf:* to *emthin:*
 - Generalize embedded dir extraction for elisp + demo
-- Rename crate directory eafvil/ to emskin/
-- Rename eafvil → emskin across source and docs **(breaking)**
+- Rename crate directory eafvil/ to emthin/
+- Rename eafvil → emthin across source and docs **(breaking)**
 - Replace forward_key IPC with prefix-key focus redirect
 - Event-driven X11 clipboard outgoing transfers
 - Replace host keymap detection with CLI arguments

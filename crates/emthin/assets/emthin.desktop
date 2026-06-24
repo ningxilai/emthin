@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=emthin
+Comment=Nested Wayland compositor for Emacs
+Exec=emthin --standalone
+Icon=emthin
+Type=Application
+Categories=Development;TextEditor;
+Keywords=emacs;wayland;compositor;

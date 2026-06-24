@@ -5,7 +5,7 @@
 header = """
 # Changelog
 
-All notable changes to emskin are documented here.
+All notable changes to emthin are documented here.
 Generated from conventional commits via git-cliff.
 
 """

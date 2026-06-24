@@ -1,11 +1,11 @@
-# Contributing to emskin
+# Contributing to emthin
 
 For architecture and internals, read [`CLAUDE.md`](CLAUDE.md) and the per-crate `crates/*/CLAUDE.md` files.
 
 ## Setup
 
 Install the pinned Rust toolchain (currently 1.92.0 — `rustup show` inside
-`crates/emskin/` picks it up from `rust-toolchain.toml`) and the system libs.
+`crates/emthin/` picks it up from `rust-toolchain.toml`) and the system libs.
 On Arch:
 
 ```
@@ -20,9 +20,9 @@ sudo pacman -S wl-clipboard xclip
 ```
 
 `xwayland-satellite` is **not** required to run the test suite —
-emskin's satellite supervisor probes the binary at startup and falls
+emthin's satellite supervisor probes the binary at startup and falls
 back to "Wayland-only" if missing. Install it (AUR on Arch) only when you
-want to exercise emskin end-to-end against real X applications.
+want to exercise emthin end-to-end against real X applications.
 
 ## Local checks
 

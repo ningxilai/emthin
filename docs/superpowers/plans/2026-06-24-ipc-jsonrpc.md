@@ -4,7 +4,7 @@
 
 **Goal:** Replace custom 4-byte LE framing + serde tagged-enum IPC protocol with JSON-RPC 2.0 + `Content-Length` header framing, using Emacs's built-in `jsonrpc.el`.
 
-**Architecture:** Two-layer split — `connection.rs` owns byte framing (`Content-Length: N\r\n\r\n`), `jsonrpc.rs` owns protocol envelope (`jsonrpc/method/params`). `messages.rs` enums hold data without serde derives. `emskin-ipc.el` delegates to `jsonrpc-process-connection`.
+**Architecture:** Two-layer split — `connection.rs` owns byte framing (`Content-Length: N\r\n\r\n`), `jsonrpc.rs` owns protocol envelope (`jsonrpc/method/params`). `messages.rs` enums hold data without serde derives. `emthin-ipc.el` delegates to `jsonrpc-process-connection`.
 
 **Tech Stack:** Rust serde_json (existing dep), Emacs jsonrpc.el (built-in)
 
@@ -13,8 +13,8 @@
 ### Task 1: connection.rs — Rewrite framing to Content-Length headers
 
 **Files:**
-- Modify: `crates/emskin/src/ipc/connection.rs`
-- Test: `crates/emskin/src/ipc/connection.rs` (inline `#[cfg(test)]`)
+- Modify: `crates/emthin/src/ipc/connection.rs`
+- Test: `crates/emthin/src/ipc/connection.rs` (inline `#[cfg(test)]`)
 
 **Design:**
 - `try_recv()`: scan for `Content-Length: N\r\n\r\n` instead of reading 4-byte LE prefix
@@ -124,7 +124,7 @@ fn enqueue_and_flush_roundtrip() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cargo test -p emskin -- ipc::connection::tests 2>&1 | head -30
+cargo test -p emthin -- ipc::connection::tests 2>&1 | head -30
 ```
 
 Expected: compilation errors — `enqueue` renamed, `write_framed` removed, `try_recv` signature may differ.
@@ -227,7 +227,7 @@ impl IpcConn {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cargo test -p emskin -- ipc::connection::tests 2>&1
+cargo test -p emthin -- ipc::connection::tests 2>&1
 ```
 
 Expected: 8 tests pass.
@@ -235,7 +235,7 @@ Expected: 8 tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/emskin/src/ipc/connection.rs
+git add crates/emthin/src/ipc/connection.rs
 git commit -m "refactor(ipc): Content-Length framing in connection.rs"
 ```
 
@@ -244,8 +244,8 @@ git commit -m "refactor(ipc): Content-Length framing in connection.rs"
 ### Task 2: messages.rs — Strip serde derives, add from_jsonrpc_params
 
 **Files:**
-- Modify: `crates/emskin/src/ipc/messages.rs`
-- Test: `crates/emskin/src/ipc/messages.rs` (inline `#[cfg(test)]`)
+- Modify: `crates/emthin/src/ipc/messages.rs`
+- Test: `crates/emthin/src/ipc/messages.rs` (inline `#[cfg(test)]`)
 
 - [ ] **Step 1: Remove serde derives, add from_jsonrpc_params**
 
@@ -260,7 +260,7 @@ pub struct IpcRect {
     pub h: i32,
 }
 
-/// Emacs → emskin
+/// Emacs → emthin
 #[derive(Debug, Clone, PartialEq)]
 pub enum IncomingMessage {
     SetGeometry { window_id: u64, rect: IpcRect },
@@ -369,7 +369,7 @@ fn params_get_bool(params: &serde_json::Value, key: &str) -> Result<bool, String
 Also update `OutgoingMessage`: remove `#[derive(Serialize)]`, add `method_name()` and `into_params_value()`:
 
 ```rust
-/// emskin → Emacs
+/// emthin → Emacs
 #[derive(Debug, Clone)]
 pub enum OutgoingMessage {
     Connected { version: &'static str },
@@ -420,7 +420,7 @@ impl OutgoingMessage {
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cargo check -p emskin 2>&1
+cargo check -p emthin 2>&1
 ```
 
 Expected: compiles. Some warnings about dead code in `IpcRect` `Serialize` (used by tests) — OK.
@@ -534,7 +534,7 @@ mod tests {
 - [ ] **Step 4: Run tests**
 
 ```bash
-cargo test -p emskin -- ipc::messages::tests 2>&1
+cargo test -p emthin -- ipc::messages::tests 2>&1
 ```
 
 Expected: all pass.
@@ -542,7 +542,7 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/emskin/src/ipc/messages.rs
+git add crates/emthin/src/ipc/messages.rs
 git commit -m "refactor(ipc): strip serde derives, add from_jsonrpc"
 ```
 
@@ -551,7 +551,7 @@ git commit -m "refactor(ipc): strip serde derives, add from_jsonrpc"
 ### Task 3: jsonrpc.rs — New JSON-RPC envelope module
 
 **Files:**
-- Create: `crates/emskin/src/ipc/jsonrpc.rs`
+- Create: `crates/emthin/src/ipc/jsonrpc.rs`
 - Test: inline `#[cfg(test)]`
 
 - [ ] **Step 1: Write the module**
@@ -647,14 +647,14 @@ mod tests {
 - [ ] **Step 2: Register in mod.rs**
 
 ```rust
-// in crates/emskin/src/ipc/mod.rs
+// in crates/emthin/src/ipc/mod.rs
 pub mod jsonrpc;
 ```
 
 - [ ] **Step 3: Verify compilation + run tests**
 
 ```bash
-cargo test -p emskin -- ipc::jsonrpc::tests 2>&1
+cargo test -p emthin -- ipc::jsonrpc::tests 2>&1
 ```
 
 Expected: all pass.
@@ -662,7 +662,7 @@ Expected: all pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/emskin/src/ipc/jsonrpc.rs crates/emskin/src/ipc/mod.rs
+git add crates/emthin/src/ipc/jsonrpc.rs crates/emthin/src/ipc/mod.rs
 git commit -m "feat(ipc): JSON-RPC 2.0 envelope module"
 ```
 
@@ -671,7 +671,7 @@ git commit -m "feat(ipc): JSON-RPC 2.0 envelope module"
 ### Task 4: mod.rs (IpcServer) — Wire jsonrpc.rs into send/recv
 
 **Files:**
-- Modify: `crates/emskin/src/ipc/mod.rs`
+- Modify: `crates/emthin/src/ipc/mod.rs`
 
 - [ ] **Step 1: Update IpcServer::accept, send, recv_all**
 
@@ -801,7 +801,7 @@ impl IpcServer {
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cargo check -p emskin 2>&1
+cargo check -p emthin 2>&1
 ```
 
 Expected: compiles clean.
@@ -809,7 +809,7 @@ Expected: compiles clean.
 - [ ] **Step 3: Run all IPC tests**
 
 ```bash
-cargo test -p emskin -- ipc:: 2>&1
+cargo test -p emthin -- ipc:: 2>&1
 ```
 
 Expected: all pass.
@@ -817,21 +817,21 @@ Expected: all pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/emskin/src/ipc/mod.rs
+git add crates/emthin/src/ipc/mod.rs
 git commit -m "refactor(ipc): wire JSON-RPC into IpcServer send/recv"
 ```
 
 ---
 
-### Task 5: emskin-ipc.el — Rewrite with jsonrpc.el
+### Task 5: emthin-ipc.el — Rewrite with jsonrpc.el
 
 **Files:**
-- Rewrite: `elisp/emskin-ipc.el`
+- Rewrite: `elisp/emthin-ipc.el`
 
 - [ ] **Step 1: Replace entire file content**
 
 ```elisp
-;;; emskin-ipc.el --- IPC connection and protocol for emskin  -*- lexical-binding: t; -*-
+;;; emthin-ipc.el --- IPC connection and protocol for emthin  -*- lexical-binding: t; -*-
 
 (require 'jsonrpc)
 
@@ -839,37 +839,37 @@ git commit -m "refactor(ipc): wire JSON-RPC into IpcServer send/recv"
 ;; IPC connection state
 ;; ---------------------------------------------------------------------------
 
-(defvar emskin--jsonrpc-conn nil
-  "JSON-RPC connection to emskin compositor.")
+(defvar emthin--jsonrpc-conn nil
+  "JSON-RPC connection to emthin compositor.")
 
-(defvar emskin-ipc-path nil
+(defvar emthin-ipc-path nil
   "Explicit IPC socket path.  When nil, auto-discovered via parent PID.")
 
 ;; ---------------------------------------------------------------------------
 ;; Hooks
 ;; ---------------------------------------------------------------------------
 
-(defvar emskin--message-hook nil
+(defvar emthin--message-hook nil
   "Hook run with (METHOD PARAMS) for each incoming JSON-RPC notification.")
 
-(defvar emskin-connected-hook nil
-  "Hook run after the IPC connection to emskin is (re-)established.")
+(defvar emthin-connected-hook nil
+  "Hook run after the IPC connection to emthin is (re-)established.")
 
 ;; ---------------------------------------------------------------------------
 ;; Sending
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--send (method params)
+(defun emthin--send (method params)
   "Send JSON-RPC notification METHOD with PARAMS.
 PARAMS is a plist suitable for `json-serialize'."
-  (when emskin--jsonrpc-conn
-    (jsonrpc-notify emskin--jsonrpc-conn method params)))
+  (when emthin--jsonrpc-conn
+    (jsonrpc-notify emthin--jsonrpc-conn method params)))
 
-(defun emskin--send-thunk (method params)
+(defun emthin--send-thunk (method params)
   "Return thunk that sends METHOD+PARAMS when called.
 Encoding happens at thunk-creation time; network write happens
 when the thunk is called."
-  (let ((conn emskin--jsonrpc-conn))
+  (let ((conn emthin--jsonrpc-conn))
     (lambda ()
       (when conn (jsonrpc-notify conn method params)))))
 
@@ -877,16 +877,16 @@ when the thunk is called."
 ;; Socket discovery
 ;; ---------------------------------------------------------------------------
 
-(defun emskin--ipc-path ()
+(defun emthin--ipc-path ()
   "Return the IPC socket path, auto-discovering via parent PID."
-  (or emskin-ipc-path
+  (or emthin-ipc-path
       (with-temp-buffer
         (insert-file-contents-literally
          (format "/proc/%d/status" (emacs-pid)))
         (goto-char (point-min))
         (let ((ppid (and (re-search-forward "^PPid:\t\\([0-9]+\\)" nil t)
                          (match-string 1))))
-          (format "%s/emskin-%s.ipc"
+          (format "%s/emthin-%s.ipc"
                   (or (getenv "XDG_RUNTIME_DIR") "/tmp")
                   ppid)))))
 
@@ -894,46 +894,46 @@ when the thunk is called."
 ;; Connection
 ;; ---------------------------------------------------------------------------
 
-(defun emskin-connect ()
-  "Connect to the emskin IPC socket (auto-discovers path)."
+(defun emthin-connect ()
+  "Connect to the emthin IPC socket (auto-discovers path)."
   (interactive)
   ;; Clean up stale connection
-  (when emskin--jsonrpc-conn
-    (jsonrpc-shutdown emskin--jsonrpc-conn)
-    (setq emskin--jsonrpc-conn nil))
-  (let* ((path (emskin--ipc-path))
+  (when emthin--jsonrpc-conn
+    (jsonrpc-shutdown emthin--jsonrpc-conn)
+    (setq emthin--jsonrpc-conn nil))
+  (let* ((path (emthin--ipc-path))
          (proc (condition-case err
                    (make-network-process
-                    :name "emskin-ipc"
+                    :name "emthin-ipc"
                     :family 'local
                     :service path
                     :coding 'binary)
                  (error
-                  (message "emskin: failed to connect to %s: %s" path err)
+                  (message "emthin: failed to connect to %s: %s" path err)
                   nil))))
     (when proc
-      (setq emskin--jsonrpc-conn
+      (setq emthin--jsonrpc-conn
             (make-jsonrpc-process-connection
              :process proc
-             :on-notification #'emskin--dispatch-notification
+             :on-notification #'emthin--dispatch-notification
              :on-shutdown
              (lambda (_c)
-               (message "emskin: IPC disconnected")
-               (setq emskin--jsonrpc-conn nil))))
-      (message "emskin: connecting to %s" path))))
+               (message "emthin: IPC disconnected")
+               (setq emthin--jsonrpc-conn nil))))
+      (message "emthin: connecting to %s" path))))
 
-(defun emskin--dispatch-notification (_conn method params)
+(defun emthin--dispatch-notification (_conn method params)
   "Dispatch incoming JSON-RPC notification METHOD with PARAMS."
-  (run-hook-with-args 'emskin--message-hook method params))
+  (run-hook-with-args 'emthin--message-hook method params))
 
-(provide 'emskin-ipc)
-;;; emskin-ipc.el ends here
+(provide 'emthin-ipc)
+;;; emthin-ipc.el ends here
 ```
 
 - [ ] **Step 2: Byte-compile to verify no warnings**
 
 ```bash
-emacs -Q --batch -L elisp -f batch-byte-compile elisp/emskin-ipc.el 2>&1
+emacs -Q --batch -L elisp -f batch-byte-compile elisp/emthin-ipc.el 2>&1
 ```
 
 Expected: zero warnings.
@@ -941,8 +941,8 @@ Expected: zero warnings.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add elisp/emskin-ipc.el
-git commit -m "refactor(elisp): rewrite emskin-ipc.el with jsonrpc.el"
+git add elisp/emthin-ipc.el
+git commit -m "refactor(elisp): rewrite emthin-ipc.el with jsonrpc.el"
 ```
 
 ---
@@ -950,8 +950,8 @@ git commit -m "refactor(elisp): rewrite emskin-ipc.el with jsonrpc.el"
 ### Task 6: Dispatch adapt — hash-table → plist
 
 **Files:**
-- Modify: `elisp/emskin-app.el`
-- Modify: `elisp/emskin-workspace.el`
+- Modify: `elisp/emthin-app.el`
+- Modify: `elisp/emthin-workspace.el`
 
 The hook signature changes from `(msg : hash-table)` to `(method : symbol, params : plist)`.
 - `method` = symbol (`connected`, `window_created` …) — jsonrpc.el calls `(intern method_string)` internally
@@ -960,83 +960,83 @@ The hook signature changes from `(msg : hash-table)` to `(method : symbol, param
 Replacement dispatch:
 
 ```elisp
-;; emskin-app.el — adapt emskin--dispatch
-(defun emskin--dispatch (method params)
+;; emthin-app.el — adapt emthin--dispatch
+(defun emthin--dispatch (method params)
   (pcase method
     ('connected
-     (message "emskin: connected (version %s)" (plist-get params :version))
-     (setq emskin--active-workspace-id 1)
-     (emskin--map-frame-to-workspace (selected-frame) 1)
-     (run-hooks 'emskin-connected-hook))
+     (message "emthin: connected (version %s)" (plist-get params :version))
+     (setq emthin--active-workspace-id 1)
+     (emthin--map-frame-to-workspace (selected-frame) 1)
+     (run-hooks 'emthin-connected-hook))
     ('window_created
-     (emskin--on-window-created (plist-get params :window_id)
+     (emthin--on-window-created (plist-get params :window_id)
                                  (plist-get params :title)))
     ('window_destroyed
-     (emskin--on-window-destroyed (plist-get params :window_id)))
+     (emthin--on-window-destroyed (plist-get params :window_id)))
     ('title_changed
-     (emskin--on-title-changed (plist-get params :window_id)
+     (emthin--on-title-changed (plist-get params :window_id)
                                 (plist-get params :title)))
     ('focus_view
-     (emskin--on-focus-view (plist-get params :window_id)
+     (emthin--on-focus-view (plist-get params :window_id)
                              (plist-get params :view_id)))
     ('surface_size
      (let* ((w (plist-get params :width))
             (h (plist-get params :height))
             (frame-h (frame-pixel-height))
-            (offset (or emskin--header-offset
+            (offset (or emthin--header-offset
                         (max 0 (- h frame-h)))))
-       (setq emskin--header-offset offset)
-       (message "emskin: surface=%sx%s bars=%dpx" w h offset)
+       (setq emthin--header-offset offset)
+       (message "emthin: surface=%sx%s bars=%dpx" w h offset)
        (dolist (frame (frame-list))
-         (emskin--sync-frame frame))))
+         (emthin--sync-frame frame))))
     ('x_wayland_ready
      nil)
     (_
-     (message "emskin: unknown message method %s" method))))
+     (message "emthin: unknown message method %s" method))))
 ```
 
-And `emskin-workspace.el`:
+And `emthin-workspace.el`:
 
 ```elisp
-(defun emskin--handle-workspace-message (method params)
+(defun emthin--handle-workspace-message (method params)
   (pcase method
     ('workspace_created
-     (emskin--on-workspace-created (plist-get params :workspace_id)))
+     (emthin--on-workspace-created (plist-get params :workspace_id)))
     ('workspace_switched
-     (emskin--on-workspace-switched (plist-get params :workspace_id)))
+     (emthin--on-workspace-switched (plist-get params :workspace_id)))
     ('workspace_destroyed
-     (emskin--on-workspace-destroyed (plist-get params :workspace_id)))))
+     (emthin--on-workspace-destroyed (plist-get params :workspace_id)))))
 
-(add-hook 'emskin--message-hook #'emskin--handle-workspace-message)
+(add-hook 'emthin--message-hook #'emthin--handle-workspace-message)
 ```
 
-Also need to update all `emskin--send` call sites. The old signature was `(emskin--send '((type . "set_geometry") (window_id . ,id) ...))`. The new signature is `(emskin--send 'set_geometry '(:window_id ,id ...))`.
+Also need to update all `emthin--send` call sites. The old signature was `(emthin--send '((type . "set_geometry") (window_id . ,id) ...))`. The new signature is `(emthin--send 'set_geometry '(:window_id ,id ...))`.
 
-- [ ] **Step 1: Find and update all `emskin--send` calls**
+- [ ] **Step 1: Find and update all `emthin--send` calls**
 
 ```bash
-rg -n 'emskin--send' elisp/
+rg -n 'emthin--send' elisp/
 ```
 
 Replace each call:
-- Old: `(emskin--send '((type . "set_geometry") (window_id . ,id) (x . ,x) ...))`
-- New: `(emskin--send 'set_geometry '(:window_id ,id :x ,x ...))`
+- Old: `(emthin--send '((type . "set_geometry") (window_id . ,id) (x . ,x) ...))`
+- New: `(emthin--send 'set_geometry '(:window_id ,id :x ,x ...))`
 
 Mapping: first element `(type . "method_name")` → method symbol; remaining alist elements become plist key-value pairs.
 
-- [ ] **Step 2: Rewrite emskin--dispatch in emskin-app.el**
+- [ ] **Step 2: Rewrite emthin--dispatch in emthin-app.el**
 
-Replace the `emskin--dispatch` function body (lines 156-191) with the pcase version using plist.
+Replace the `emthin--dispatch` function body (lines 156-191) with the pcase version using plist.
 
-- [ ] **Step 3: Rewrite emskin--handle-workspace-message in emskin-workspace.el**
+- [ ] **Step 3: Rewrite emthin--handle-workspace-message in emthin-workspace.el**
 
 Replace the function body to use `pcase` and `plist-get`.
 
 - [ ] **Step 4: Byte-compile both files**
 
 ```bash
-emacs -Q --batch -L elisp -f batch-byte-compile elisp/emskin-app.el 2>&1
-emacs -Q --batch -L elisp -f batch-byte-compile elisp/emskin-workspace.el 2>&1
+emacs -Q --batch -L elisp -f batch-byte-compile elisp/emthin-app.el 2>&1
+emacs -Q --batch -L elisp -f batch-byte-compile elisp/emthin-workspace.el 2>&1
 ```
 
 Expected: zero warnings.
@@ -1044,7 +1044,7 @@ Expected: zero warnings.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add elisp/emskin-app.el elisp/emskin-workspace.el
+git add elisp/emthin-app.el elisp/emthin-workspace.el
 git commit -m "refactor(elisp): adapt dispatch from hash-table to plist"
 ```
 
@@ -1053,14 +1053,14 @@ git commit -m "refactor(elisp): adapt dispatch from hash-table to plist"
 ### Task 7: Verify Elisp tests unchanged
 
 **Files:**
-- Check: `tests/elisp/emskin-app-tests.el`
+- Check: `tests/elisp/emthin-app-tests.el`
 
-The test file calls `emskin--on-window-created` and `emskin--on-window-destroyed` with positional args directly (not through `emskin--dispatch`), so the dispatch layer change doesn't affect them.
+The test file calls `emthin--on-window-created` and `emthin--on-window-destroyed` with positional args directly (not through `emthin--dispatch`), so the dispatch layer change doesn't affect them.
 
 - [ ] **Step 1: Run existing tests to confirm no breakage**
 
 ```bash
-emacs -Q --batch -L elisp -l tests/elisp/emskin-app-tests.el \
+emacs -Q --batch -L elisp -l tests/elisp/emthin-app-tests.el \
   --eval "(ert-run-tests-batch-and-exit)" 2>&1
 ```
 
@@ -1068,7 +1068,7 @@ Expected: all pass.
 
 - [ ] **Step 2: If there are dispatch-level tests, update them**
 
-Run this to check if any test exercises `emskin--dispatch` or `emskin--handle-workspace-message`:
+Run this to check if any test exercises `emthin--dispatch` or `emthin--handle-workspace-message`:
 
 ```bash
 grep -n 'dispatch\|message-hook' tests/elisp/*.el
@@ -1091,7 +1091,7 @@ Expected: zero warnings.
 - [ ] **Step 2: Full test**
 
 ```bash
-cargo build -p emez 2>&1 && cargo test -p emskin 2>&1
+cargo build -p emez 2>&1 && cargo test -p emthin 2>&1
 ```
 
 Expected: all existing E2E tests pass (smoke, capture, clipboard). The IPC protocol change is transparent to tests that spawn their own emez host — the `Connected` message still gets sent on accept, just in JSON-RPC format.
