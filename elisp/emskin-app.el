@@ -440,7 +440,7 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
            (list
             (lambda ()
               (with-current-buffer buf
-                (set emskin--last-geometry geo)))
+                (setq emskin--last-geometry geo)))
             (lambda ()
               (emskin--call* 'set-geometry
                 :window_id window-id
@@ -498,7 +498,7 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
                   (unless (eq now-visible was-visible)
                     (push (lambda ()
                             (with-current-buffer buf
-                              (set emskin--visible now-visible)))
+                               (setq emskin--visible now-visible)))
                           thunks)
                     (push (lambda ()
                             (emskin--call* 'set-visibility
