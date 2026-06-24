@@ -375,7 +375,7 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
                   :mirror-removals removals
                   :mirror-additions (nreverse additions)
                   :mirror-updates (nreverse updates)
-                  :new-mirrors (list source-win (nreverse new-mirrors)))
+                   :new-mirrors (cons source-win (nreverse new-mirrors)))
             next-view-id))))
 
 (defun emskin--send-mirror-geometry* (wid view-id win msg-type)
