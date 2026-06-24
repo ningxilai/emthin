@@ -706,11 +706,19 @@ impl DbusBroker {
         }
 
         // Post-auth: every byte arriving from upstream is a DBus v1
-        // message frame. We parse so we can both (a) attach the
-        // declared `unix_fds` count from the in-queue, and (b) observe
-        // GetNameOwner replies / NameOwnerChanged signals for the
-        // sender-name cache.
+        // message frame — but during the SASL→DBus transition window
+        // the upstream may still have sent SASL bytes (e.g. `DATA\r\n`)
+        // before it processed the client's `BEGIN\r\n`.  Check the
+        // first byte: if it's not 'l' or 'B' it's a SASL tail, not a
+        // real DBus message — forward verbatim and let the client sort
+        // it out.
         conn.upstream_buf.extend_from_slice(&buf[..n]);
+        if matches!(conn.upstream_buf.first(), Some(b) if *b != b'l' && *b != b'B') {
+            let tail: Vec<u8> = conn.upstream_buf.drain(..).collect();
+            conn.client_out.push_back(OutPacket::bytes_only(tail));
+            Self::try_flush(&mut conn.client, &mut conn.client_out)?;
+            return Ok(PumpOutcome::Active);
+        }
         loop {
             let total = match Frame::bytes_needed(&conn.upstream_buf) {
                 Ok(None) => break,
