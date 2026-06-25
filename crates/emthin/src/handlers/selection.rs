@@ -54,7 +54,8 @@ impl SelectionHandler for EmthinState {
             // peer-to-peer routing automatically.
             match ty {
                 SelectionTarget::Clipboard => {
-                    self.selection.clipboard_origin = crate::state::SelectionOrigin::Wayland
+                    self.selection.clipboard_origin = crate::state::SelectionOrigin::Wayland;
+                    self.selection.clipboard_cache = None;
                 }
                 SelectionTarget::Primary => {
                     self.selection.primary_origin = crate::state::SelectionOrigin::Wayland

@@ -115,6 +115,7 @@ fn inject_host_selection(
             SelectionTarget::Clipboard => {
                 set_data_device_selection(&state.display_handle, &state.seat, mime_types, ());
                 state.selection.clipboard_origin = SelectionOrigin::Host;
+                state.selection.clipboard_cache = None;
             }
             SelectionTarget::Primary => {
                 set_primary_selection(&state.display_handle, &state.seat, mime_types, ());
@@ -130,6 +131,25 @@ fn forward_client_selection(
     mime_type: String,
     fd: std::os::fd::OwnedFd,
 ) {
+    // Compositor-owned clipboard cache (set by M-w copy).
+    // Check before routing by origin — same pattern as send_selection.
+    if target == SelectionTarget::Clipboard {
+        if let Some((ref mime_types, ref data)) = state.selection.clipboard_cache {
+            if mime_types.iter().any(|m| m == &mime_type) {
+                use std::io::Write;
+                use std::os::fd::IntoRawFd;
+                use std::os::unix::io::FromRawFd;
+                let mut file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+                let _ = file.write_all(data);
+                tracing::debug!(
+                    "forward_client_selection: wrote {} cached bytes for {mime_type}",
+                    data.len()
+                );
+                return;
+            }
+        }
+    }
+
     use smithay::wayland::selection::data_device::request_data_device_client_selection;
     use smithay::wayland::selection::primary_selection::request_primary_client_selection;
 
