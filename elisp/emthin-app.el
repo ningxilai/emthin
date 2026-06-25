@@ -481,7 +481,7 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
                   (error
                    (message "emthin: per-buffer sync error: %s" err)))
                 )
-            ;; 3. Always save counter (unwind)
+            (emthin--sync-focus frame)
             (setq emthin--next-view-id next-view-id)))))))
 
 ;; ---------------------------------------------------------------------------
