@@ -490,88 +490,115 @@ impl EmthinState {
     ///
     /// The data arrives asynchronously through a calloop-registered
     /// pipe; once read it is cached in `SelectionState::clipboard_cache`
-    /// and a compositor-owned CLIPBOARD selection is set.
+    /// and a compositor-owned CLIPBOARD selection is set (plus host
+    /// clipboard sync).
     fn promote_primary_to_clipboard(&mut self) {
+        tracing::info!(
+            "M-w copy: WAYLAND_DISPLAY={:?} clipboard_backend={}",
+            std::env::var("WAYLAND_DISPLAY"),
+            self.selection.clipboard.is_some(),
+        );
         use smithay::reexports::calloop::{
             generic::Generic, Interest, Mode, PostAction,
         };
         use smithay::wayland::selection::data_device::set_data_device_selection;
-        use smithay::wayland::selection::primary_selection::request_primary_client_selection;
+        use smithay::wayland::selection::primary_selection::{
+            request_primary_client_selection, SelectionRequestError,
+        };
         use std::os::fd::IntoRawFd;
         use std::os::unix::io::AsRawFd;
         use std::os::unix::io::FromRawFd;
 
-        let mut fds = [-1i32, -1i32];
-        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-        if ret != 0 {
-            return;
-        }
-        let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[0]) };
-        let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[1]) };
+        // Try MIME types in priority order.  Many apps only offer
+        // `text/plain` without the charset parameter, so we must
+        // fall back.
+        let candidates = &["text/plain;charset=utf-8", "text/plain"];
 
-        let mime_type = "text/plain;charset=utf-8".to_string();
-        match request_primary_client_selection(&self.seat, mime_type, write_fd) {
-            Ok(()) => {
-                let _ = self.display_handle.flush_clients();
-                let file = unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
-                let mut buf: Vec<u8> = Vec::new();
-                let mime_types: Vec<String> = vec![
-                    "text/plain;charset=utf-8".to_string(),
-                    "text/plain".to_string(),
-                ];
-                if let Err(e) = self.loop_handle.insert_source(
-                    Generic::new(file, Interest::READ, Mode::Level),
-                    move |_, file, state| {
-                        let mut tmp = [0u8; 65536];
-                        loop {
-                            // SAFETY: tmp is valid, fd is open and non-blocking.
-                            let n = unsafe {
-                                libc::read(
-                                    std::os::unix::io::AsFd::as_fd(file).as_raw_fd(),
-                                    tmp.as_mut_ptr().cast(),
-                                    tmp.len(),
-                                )
-                            };
-                            if n > 0 {
-                                buf.extend_from_slice(&tmp[..n as usize]);
-                            } else if n == 0 {
-                                if !buf.is_empty() {
-                                    state.selection.clipboard_cache =
-                                        Some((mime_types.clone(), std::mem::take(&mut buf)));
-                                    set_data_device_selection(
-                                        &state.display_handle,
-                                        &state.seat,
-                                        mime_types.clone(),
-                                        (),
-                                    );
-                                    // Sync to host clipboard so the
-                                    // content is available outside
-                                    // emthin (e.g. pasting into a
-                                    // terminal on the host desktop).
-                                    if let Some(ref mut cb) = state.selection.clipboard {
-                                        cb.set_host_selection(
-                                            emthin_clipboard::SelectionKind::Clipboard,
-                                            &mime_types,
-                                        );
-                                    }
-                                }
-                                return Ok(PostAction::Remove);
-                            } else {
-                                let err = std::io::Error::last_os_error();
-                                if err.kind() == std::io::ErrorKind::WouldBlock {
-                                    return Ok(PostAction::Continue);
-                                }
-                                tracing::warn!("M-w copy pipe error: {err}");
-                                return Ok(PostAction::Remove);
-                            }
-                        }
-                    },
-                ) {
-                    tracing::warn!("M-w copy: failed to register pipe source: {e}");
-                }
+        for &raw_mime in candidates {
+            let mut fds = [-1i32, -1i32];
+            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+                continue;
             }
-            Err(e) => {
-                tracing::debug!("M-w copy: no PRIMARY selection ({e:?})");
+            let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[0]) };
+            let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[1]) };
+
+            tracing::info!("M-w copy: trying mime={raw_mime}");
+            match request_primary_client_selection(
+                &self.seat,
+                raw_mime.to_string(),
+                write_fd,
+            ) {
+                Ok(()) => {
+                    tracing::info!("M-w copy: request ok, flushing display");
+                    let _ = self.display_handle.flush_clients();
+                    let file =
+                        unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mime_types: Vec<String> = vec![
+                        "text/plain;charset=utf-8".to_string(),
+                        "text/plain".to_string(),
+                    ];
+                    if let Err(e) = self.loop_handle.insert_source(
+                        Generic::new(file, Interest::READ, Mode::Level),
+                        move |_, file_ref, state| {
+                            let mut tmp = [0u8; 65536];
+                            loop {
+                                // SAFETY: tmp is valid, fd is open and non-blocking.
+                                let n = unsafe {
+                                    libc::read(
+                                        std::os::unix::io::AsFd::as_fd(file_ref).as_raw_fd(),
+                                        tmp.as_mut_ptr().cast(),
+                                        tmp.len(),
+                                    )
+                                };
+                                if n > 0 {
+                                    tracing::info!("M-w copy: read {} bytes", n);
+                                    buf.extend_from_slice(&tmp[..n as usize]);
+                                } else if n == 0 {
+                                    let total = buf.len();
+                                    if !buf.is_empty() {
+                                        state.selection.clipboard_cache =
+                                            Some((mime_types.clone(), std::mem::take(&mut buf)));
+                                        tracing::info!("M-w copy: setting clipboard, {} bytes", total);
+                                        set_data_device_selection(
+                                            &state.display_handle,
+                                            &state.seat,
+                                            mime_types.clone(),
+                                            (),
+                                        );
+                                        if let Some(ref mut cb) = state.selection.clipboard {
+                                            tracing::info!("M-w copy: syncing to host");
+                                            cb.set_host_selection(
+                                                emthin_clipboard::SelectionKind::Clipboard,
+                                                &mime_types,
+                                            );
+                                        }
+                                    }
+                                    return Ok(PostAction::Remove);
+                                } else {
+                                    let err = std::io::Error::last_os_error();
+                                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                                        return Ok(PostAction::Continue);
+                                    }
+                                    tracing::warn!("M-w copy pipe error: {err}");
+                                    return Ok(PostAction::Remove);
+                                }
+                            }
+                        },
+                    ) {
+                        tracing::warn!("M-w copy: failed to register pipe source: {e}");
+                    }
+                    return;
+                }
+                Err(SelectionRequestError::InvalidMimetype) => {
+                    tracing::info!("M-w copy: {raw_mime} not offered");
+                    let _ = unsafe { libc::close(read_fd.into_raw_fd()) };
+                }
+                Err(e) => {
+                    tracing::info!("M-w copy: selection unavailable ({e:?})");
+                    let _ = unsafe { libc::close(read_fd.into_raw_fd()) };
+                    return;
+                }
             }
         }
     }
