@@ -544,6 +544,16 @@ impl EmthinState {
                                         mime_types.clone(),
                                         (),
                                     );
+                                    // Sync to host clipboard so the
+                                    // content is available outside
+                                    // emthin (e.g. pasting into a
+                                    // terminal on the host desktop).
+                                    if let Some(ref mut cb) = state.selection.clipboard {
+                                        cb.set_host_selection(
+                                            emthin_clipboard::SelectionKind::Clipboard,
+                                            &mime_types,
+                                        );
+                                    }
                                 }
                                 return Ok(PostAction::Remove);
                             } else {
