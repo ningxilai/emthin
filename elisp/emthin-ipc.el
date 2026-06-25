@@ -101,6 +101,14 @@ to snake for the wire format).  PARAMS is a plist suitable for
                (setq emthin--jsonrpc-conn nil
                      emthin--process nil))))
       (setq emthin--process t)
+      ;; Prevent save-some-buffers from writing the events buffer to
+      ;; disk (default-directory inherits the project root, and the
+      ;; buffer name contains * which breaks coding-system detection).
+      (let ((buf (get-buffer-create (format " *JSONRPC events/%s*" "emthin"))))
+        (with-current-buffer buf
+          (setq default-directory temporary-file-directory
+                buffer-offer-save nil
+                buffer-auto-save-file-name nil)))
       (message "emthin: connecting to %s" path))))
 
 (defun emthin--dispatch-notification (_conn method params)
