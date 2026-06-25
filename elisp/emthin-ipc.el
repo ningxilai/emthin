@@ -110,15 +110,13 @@ to snake for the wire format).  PARAMS is a plist suitable for
       ;; coding-system-for-write so write-region skips
       ;; select-safe-coding-system entirely — avoiding the
       ;; buffer-chars-modified-tick race (Emacs 32, line 1067).
-      (let ((buf (get-buffer-create (format " *JSONRPC events/%s*" "emthin"))))
+      (let ((buf (jsonrpc-events-buffer emthin--jsonrpc-conn)))
         (with-current-buffer buf
-          (jsonrpc-events-mode)
           (setq default-directory temporary-file-directory
                 buffer-offer-save nil
                 buffer-auto-save-file-name nil
                 buffer-file-coding-system 'utf-8-unix
-                save-buffer-coding-system 'utf-8-unix))
-        (setf (jsonrpc--events-buffer emthin--jsonrpc-conn) buf))
+                save-buffer-coding-system 'utf-8-unix)))
       (message "emthin: connecting to %s" path))))
 
 (defun emthin--dispatch-notification (_conn method params)
