@@ -102,49 +102,35 @@ impl EmthinState {
                         // Clipboard injection — keep focus on the
                         // embedded app, suppress the original key,
                         // synthesise the translated shortcut.
+                        //
+                        // Each pair must first update xkb state
+                        // (input_intercept) so the forwarded event
+                        // carries correct modifiers — the closure
+                        // always returns true (consume) since we
+                        // manually forward via input_forward with
+                        // the updated mods_state behind.
                         if event.state() == KeyState::Pressed {
+                            use smithay::input::keyboard::Keycode;
+                            let mut inject_one = |kc: u32, st| {
+                                let kc: Keycode = kc.into();
+                                keyboard.input_intercept(self, kc, st, |_, _, _| true);
+                                keyboard.input_forward(self, kc, st, serial, time, true);
+                            };
                             match op {
                                 TranslateOp::Copy => {
-                                    keyboard.input_forward(
-                                        self, KEYCODE_LALT.into(),
-                                        KeyState::Released, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_LCTRL.into(),
-                                        KeyState::Pressed, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_C.into(),
-                                        KeyState::Pressed, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_C.into(),
-                                        KeyState::Released, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_LCTRL.into(),
-                                        KeyState::Released, serial, time, true,
-                                    );
+                                    inject_one(KEYCODE_LALT, KeyState::Released);
+                                    inject_one(KEYCODE_LCTRL, KeyState::Pressed);
+                                    inject_one(KEYCODE_C, KeyState::Pressed);
+                                    inject_one(KEYCODE_C, KeyState::Released);
+                                    inject_one(KEYCODE_LCTRL, KeyState::Released);
                                 }
                                 TranslateOp::Cut => {
-                                    keyboard.input_forward(
-                                        self, KEYCODE_X.into(),
-                                        KeyState::Pressed, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_X.into(),
-                                        KeyState::Released, serial, time, true,
-                                    );
+                                    inject_one(KEYCODE_X, KeyState::Pressed);
+                                    inject_one(KEYCODE_X, KeyState::Released);
                                 }
                                 TranslateOp::Paste => {
-                                    keyboard.input_forward(
-                                        self, KEYCODE_V.into(),
-                                        KeyState::Pressed, serial, time, true,
-                                    );
-                                    keyboard.input_forward(
-                                        self, KEYCODE_V.into(),
-                                        KeyState::Released, serial, time, true,
-                                    );
+                                    inject_one(KEYCODE_V, KeyState::Pressed);
+                                    inject_one(KEYCODE_V, KeyState::Released);
                                 }
                             }
                         }
