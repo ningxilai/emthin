@@ -13,7 +13,7 @@ license = "GPL-3.0"
 repository = "https://github.com/emthin/emthin"
 
 [workspace.dependencies]
-smithay = { git = "https://github.com/emskin/smithay.git", branch = "emskin-patches", default-features = false, features = [
+smithay = { git = "https://github.com/ningxilai/smithay.git", branch = "emskin-patches", default-features = false, features = [
     "backend_winit",
     "backend_drm",
     "wayland_frontend",
