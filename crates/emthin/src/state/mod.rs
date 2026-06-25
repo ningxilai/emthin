@@ -138,6 +138,11 @@ pub struct SelectionState {
     pub clipboard_origin: SelectionOrigin,
     /// Where the current primary selection came from.
     pub primary_origin: SelectionOrigin,
+    /// Cached payload for a compositor-owned clipboard selection
+    /// (populated by M-w copy from an embedded app's PRIMARY
+    /// selection).  `(mime_types, data)` — `send_selection` writes
+    /// `data` into the fd when the requested mime_type matches.
+    pub clipboard_cache: Option<(Vec<String>, Vec<u8>)>,
 }
 
 /// Smithay Wayland protocol state — pure bookkeeping for compositor protocols.

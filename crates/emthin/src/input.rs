@@ -18,9 +18,6 @@ use smithay::{
 use crate::state::EmthinState;
 
 // XKB keycodes (evdev + 8, matching winit backend convention).
-const KEYCODE_LCTRL: u32 = 37;
-const KEYCODE_LALT: u32 = 64;
-const KEYCODE_C: u32 = 54;
 const KEYCODE_X: u32 = 53;
 const KEYCODE_V: u32 = 55;
 
@@ -111,19 +108,19 @@ impl EmthinState {
                         // the updated mods_state behind.
                         if event.state() == KeyState::Pressed {
                             use smithay::input::keyboard::Keycode;
+                            if matches!(op, TranslateOp::Copy) {
+                                // M-w — promote the embedded app's
+                                // PRIMARY selection to CLIPBOARD via
+                                // an async pipe.  No key injection.
+                                self.promote_primary_to_clipboard();
+                            }
                             let mut inject_one = |kc: u32, st| {
                                 let kc: Keycode = kc.into();
                                 keyboard.input_intercept(self, kc, st, |_, _, _| true);
                                 keyboard.input_forward(self, kc, st, serial, time, true);
                             };
                             match op {
-                                TranslateOp::Copy => {
-                                    inject_one(KEYCODE_LALT, KeyState::Released);
-                                    inject_one(KEYCODE_LCTRL, KeyState::Pressed);
-                                    inject_one(KEYCODE_C, KeyState::Pressed);
-                                    inject_one(KEYCODE_C, KeyState::Released);
-                                    inject_one(KEYCODE_LCTRL, KeyState::Released);
-                                }
+                                TranslateOp::Copy => {}
                                 TranslateOp::Cut => {
                                     inject_one(KEYCODE_X, KeyState::Pressed);
                                     inject_one(KEYCODE_X, KeyState::Released);
@@ -486,5 +483,86 @@ impl EmthinState {
         };
         let serial = SERIAL_COUNTER.next_serial();
         keyboard.set_focus(self, Some(saved), serial);
+    }
+
+    /// Read the current PRIMARY selection from the focused seat and
+    /// promote it to CLIPBOARD.  Used by M-w on embedded apps.
+    ///
+    /// The data arrives asynchronously through a calloop-registered
+    /// pipe; once read it is cached in `SelectionState::clipboard_cache`
+    /// and a compositor-owned CLIPBOARD selection is set.
+    fn promote_primary_to_clipboard(&mut self) {
+        use smithay::reexports::calloop::{
+            generic::Generic, Interest, Mode, PostAction,
+        };
+        use smithay::wayland::selection::data_device::set_data_device_selection;
+        use smithay::wayland::selection::primary_selection::request_primary_client_selection;
+        use std::os::fd::IntoRawFd;
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::io::FromRawFd;
+
+        let mut fds = [-1i32, -1i32];
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        if ret != 0 {
+            return;
+        }
+        let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[0]) };
+        let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[1]) };
+
+        let mime_type = "text/plain;charset=utf-8".to_string();
+        match request_primary_client_selection(&self.seat, mime_type, write_fd) {
+            Ok(()) => {
+                let _ = self.display_handle.flush_clients();
+                let file = unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
+                let mut buf: Vec<u8> = Vec::new();
+                let mime_types: Vec<String> = vec![
+                    "text/plain;charset=utf-8".to_string(),
+                    "text/plain".to_string(),
+                ];
+                if let Err(e) = self.loop_handle.insert_source(
+                    Generic::new(file, Interest::READ, Mode::Level),
+                    move |_, file, state| {
+                        let mut tmp = [0u8; 65536];
+                        loop {
+                            // SAFETY: tmp is valid, fd is open and non-blocking.
+                            let n = unsafe {
+                                libc::read(
+                                    std::os::unix::io::AsFd::as_fd(file).as_raw_fd(),
+                                    tmp.as_mut_ptr().cast(),
+                                    tmp.len(),
+                                )
+                            };
+                            if n > 0 {
+                                buf.extend_from_slice(&tmp[..n as usize]);
+                            } else if n == 0 {
+                                if !buf.is_empty() {
+                                    state.selection.clipboard_cache =
+                                        Some((mime_types.clone(), std::mem::take(&mut buf)));
+                                    set_data_device_selection(
+                                        &state.display_handle,
+                                        &state.seat,
+                                        mime_types.clone(),
+                                        (),
+                                    );
+                                }
+                                return Ok(PostAction::Remove);
+                            } else {
+                                let err = std::io::Error::last_os_error();
+                                if err.kind() == std::io::ErrorKind::WouldBlock {
+                                    return Ok(PostAction::Continue);
+                                }
+                                tracing::warn!("M-w copy pipe error: {err}");
+                                return Ok(PostAction::Remove);
+                            }
+                        }
+                    },
+                ) {
+                    tracing::warn!("M-w copy: failed to register pipe source: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::debug!("M-w copy: no PRIMARY selection ({e:?})");
+            }
+        }
     }
 }

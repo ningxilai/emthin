@@ -87,6 +87,22 @@ impl SelectionHandler for EmthinState {
         _user_data: &(),
     ) {
         tracing::debug!("Wayland paste request ({ty:?}, {mime_type})");
+
+        // Compositor-owned clipboard cache (set by M-w copy).
+        if ty == SelectionTarget::Clipboard {
+            if let Some((ref mime_types, ref data)) = self.selection.clipboard_cache {
+                if mime_types.iter().any(|m| m == &mime_type) {
+                    use std::io::Write;
+                    use std::os::fd::IntoRawFd;
+                    use std::os::unix::io::FromRawFd;
+                    let mut file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+                    let _ = file.write_all(data);
+                    tracing::debug!("Wrote {} cached bytes for {mime_type}", data.len());
+                    return;
+                }
+            }
+        }
+
         let origin = match ty {
             SelectionTarget::Clipboard => self.selection.clipboard_origin,
             SelectionTarget::Primary => self.selection.primary_origin,
@@ -94,10 +110,6 @@ impl SelectionHandler for EmthinState {
         use crate::state::SelectionOrigin;
         match origin {
             SelectionOrigin::Wayland => {
-                // Another wayland client on us owns the selection —
-                // smithay routes directly between them via the shared
-                // data_device; emthin's handler should not be called
-                // here. If we are, dropping fd yields EOF gracefully.
                 tracing::debug!(
                     "Wayland paste origin=Wayland — smithay routes internally, dropping fd"
                 );
