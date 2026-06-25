@@ -31,59 +31,17 @@ emthin      ──→  emthin-clipboard
    this and root `[workspace.package].version` must bump together
    (`cargo release` handles both via `release.toml`).
 
-## Repository layout
-
-```
-crates/
-├── effect-core/       # Effect trait, EffectChain, render helpers (no host state)
-├── effect-plugins/    # built-in overlays — one file per plugin in src/
-│   ├── measure.rs   skeleton.rs   splash.rs
-│   ├── cursor_trail.rs   jelly_cursor.rs
-│   ├── recorder.rs   key_cast.rs
-│   └── bitmap_font.rs
-├── emthin/            # compositor binary, IPC, handlers/, tests/
-└── emthin-bar/        # standalone Wayland client (zero workspace deps)
-elisp/                 # Emacs-side client, embedded via include_dir!
-```
-
-Rules:
-- `effect-plugins` **never** imports from `emthin`. Plugins are purely
-  visual via `effect_core::Effect`; host concerns (IPC, workspaces, focus)
-  stay in `emthin`.
-- `emthin-bar` links against nothing in this workspace — any third-party
-  layer-shell bar (waybar, eww) must remain a drop-in replacement.
-
 ## Testing
 
-E2E tests each spawn their own private host compositor. Invoke directly
-with cargo:
+Two integration tests for xwayland-satellite helpers:
 
 ```
 cargo test -p emthin
 ```
 
-E2E entry: `cargo build -p emez && cargo test -p emthin`. **Two steps is a cargo-stable limitation**, not a bug: emez is a binary crate and cargo stable has no bindeps (`-Z bindeps` / [RFC 3028](https://rust-lang.github.io/rfcs/3028-cargo-binary-dependencies.html) is nightly-only), so there's no first-class way to say "build this binary before my tests". The harness falls back to runtime discovery via `find_emez_binary()` (scans `target/{debug,release}/emez`); if the binary isn't there it panics with a clear message pointing at the build step. A future `cargo-xtask` wrapper could collapse this to one command, but for current project scale it's overengineering. Tests run in **parallel**; the harness pre-allocates a unique X DISPLAY number for every emez-host and emthin instance through a process-wide reservation pool (`DisplaySlot`) and passes them via `--xwayland-display`, so smithay's XWayland bootstrap never races. Each test also spawns its **own** private host compositor (`NestedHost::wayland()` → **emez** headless, our smithay-based sister crate in `crates/emez/`; `NestedHost::x11()` → Xvfb) into a dedicated `XDG_RUNTIME_DIR`.
-
-### Lifecycle
-
-`WaylandHost::drop` / `Compositor::drop` send SIGTERM (not `Child::kill`, which is SIGKILL) so emez runs its full Rust Drop chain and kills the Xwayland child. emez registers a SIGTERM handler (signal-hook) that calls `LoopSignal::stop()` + `LoopSignal::wakeup()` to break out of `event_loop.run` immediately. Signal-driven exits occasionally truncate the Drop chain, so emez and harness both remove `/tmp/.X11-unix/X<N>` + `/tmp/.X<N>-lock` as a belt-and-braces step.
-
-### Test files and current counts (all green)
-
-- `tests/common/mod.rs` — `NestedHost` + `Compositor::spawn_on` + test-client helpers (`wl_copy`/`wl_paste`/`xclip_copy`/`xclip_paste` + primary variants) + `DisplaySlot` reservation pool + `graceful_kill`. `find_emez_binary()` locates `target/<profile>/emez` at runtime (cargo doesn't set `CARGO_BIN_EXE_<name>` across crates).
-- `tests/e2e_smoke.rs` — 2 tests (IPC handshake + SetMeasure survival).
-- `tests/e2e_capture.rs` — 2 tests (screenshot PNG, recording mp4). emez sends frame callbacks immediately on commit so emthin's winit render loop stays active.
-- `tests/e2e_clipboard_wayland.rs` — 5 tests (iw↔iw, iw→ow, iw→ox, ow→iw, ox→iw) under Wayland host (emez). Covers `zwlr_data_control_v1` path in `emthin-clipboard::data_control` plus emez's own XWayland for the external-X cells. No internal-X (`ix_*`) role.
-- `tests/e2e_clipboard_wayland_no_data_control.rs` — 2 tests under emez's `--no-data-control` mode, exercising the `wl_data_device` fallback.
-- `tests/e2e_clipboard_x11.rs` — 3 tests (iw→ox, ox→iw, primary ox→iw) covering the 外X combinations under Xvfb host.
-- `tests/e2e_xwayland_satellite.rs` — 1 smoke test.
-- `tests/xwayland_satellite.rs` / `xwayland_satellite_watch.rs` — 12 + 5 integration tests.
-
-### Test-mode knobs
-
-- `--wayland-socket <NAME>` / `EMTHIN_WAYLAND_SOCKET_NAME=<name>` — pins emthin's own Wayland socket.
-- `EMTHIN_DISABLE_EMACS_DETECTION=1` — skips "first toplevel = Emacs" heuristic.
-- `EMTHIN_DISABLE_HOST_CLIPBOARD=1` — legacy safety valve.
+Test files:
+- `tests/xwayland_satellite.rs` — pure pieces (socket pre-binding, spawn-command construction)
+- `tests/xwayland_satellite_watch.rs` — calloop watch integration
 
 ### Test gotchas
 
@@ -112,7 +70,7 @@ E2E entry: `cargo build -p emez && cargo test -p emthin`. **Two steps is a cargo
 
 - Nested Wayland compositor using smithay, hosting Emacs inside a winit window
 - First toplevel = Emacs (fullscreen), subsequent toplevels = **arbitrary embedded programs** (any Wayland or XWayland client) managed by AppManager. Not limited to EAF — any GTK/Qt/Electron/X11 app can be embedded as a child window whose geometry is controlled by Emacs via IPC.
-- IPC protocol: JSON-RPC 2.0 over Unix socket (`Content-Length: N\r\n\r\n` framing). All current messages are notifications (no `id`). Emacs→compositor: set_geometry, close, set_visibility, prefix_done, set_focus, add_mirror, update_mirror_geometry, remove_mirror, promote_mirror. Compositor→Emacs: connected, surface_size, window_created, window_destroyed, title_changed, focus_view, xwayland_ready
+- IPC protocol: JSON-RPC 2.0 over Unix socket (`Content-Length: N\r\n\r\n` framing). All messages are notifications (no `id`). Emacs→compositor: `set_geometry`, `close`, `set_visibility`, `prefix_done`, `prefix_clear`, `set_focus`, `add_mirror`, `update_mirror_geometry`, `remove_mirror`, `promote_mirror`, `switch_workspace`. Compositor→Emacs: `connected`, `surface_size`, `window_created`, `window_destroyed`, `title_changed`, `focus_view`, `xwayland_ready`, `workspace_created`, `workspace_switched`, `workspace_destroyed`.
 - Elisp client: split across `elisp/emthin.el` (entry + shared state), `emthin-ipc.el` (`jsonrpc-process-connection` + notification dispatch + `emthin-connected-hook`), `emthin-app.el` (app lifecycle + geometry + mirrors + dispatch), `emthin-workspace.el` (workspace CRUD + frame mapping). Auto-connects via parent PID socket discovery. All files are embedded into the binary via `include_dir!` and extracted at runtime in standalone mode. Elisp dispatch uses `pcase` on method symbol (not hash-table lookup).
 - Mirror system: same embedded program displays in multiple Emacs windows. Source = first window (real surface), mirrors = subsequent windows (TextureRenderElement from same GPU texture). Elisp tracks source/mirror in `emthin--mirror-table`
 - Keyboard input: compositor detects Emacs prefix keys (C-x, C-c, M-x) and clipboard shortcuts (M-w, C-w, C-y) via `input_intercept` in `input.rs`. Three-way dispatch based on focus and key:
@@ -188,7 +146,6 @@ E2E entry: `cargo build -p emez && cargo test -p emthin`. **Two steps is a cargo
 - Mirror scaling: aspect-fit with top-left alignment; coordinate mapping in `mirror_under` uses `rel.downscale(ratio)` to map mirror→source; `AppManager::aspect_fit_ratio()` returns None for zero-size to prevent NaN
 - `render_output`'s second type param is the custom_elements type (not space element type); `render_scale` (value 1.0) is actually the `alpha` parameter
 - `render_elements!` macro cannot parse associated-type bounds (`Renderer<TextureId = GlesTexture>`) — define a blanket helper trait as workaround. The `CustomElement` enum + `EmthinRenderer` trait live in `crate::element`.
-- Custom overlays: `SolidColorRenderElement` for shapes, `MemoryRenderBuffer` + bitmap font for text. `CommitCounter` must be stored in struct and incremented on change — `default()` every frame defeats damage tracking.
 - Elisp `defcustom` with `:set` that references later-defined vars: use `:initialize #'custom-initialize-default` + `bound-and-true-p` to avoid void-variable at load time
 - IME: all text_input_v3 logic lives in `ime.rs::ImeBridge`. Three smithay-imposed constraints drive that design: (1) registering `TextInputManagerState` causes fcitx5-gtk to switch from DBus to text_input_v3, so `set_ime_allowed` must be toggled per-focused-client (only when the client has bound text_input_v3, probed via `with_focused_text_input`) — see `ImeBridge::on_focus_changed`; (2) smithay's keyboard.rs gates `text_input.enter()/leave()` behind `input_method.has_instance()` which is always false here, so enter/leave must be called manually with a temporary focus swap to send `leave` to the correct old client — same function; (3) `focus_changed` cannot access the winit backend, so the `set_ime_allowed` decision is stored in `ImeBridge::ime_enabled` and drained by `apply_pending_state` via `take_ime_enabled()` (same deferred pattern as `pending_fullscreen`/`pending_maximize`)
 - IME via DBus fcitx5 frontend (B1, for embedded clients with `GTK_IM_MODULE=fcitx`): `DbusBridge` spawns an in-process `DbusBroker` in `state/dbus.rs`; broker binds `$XDG_RUNTIME_DIR/emthin-dbus-<pid>/bus.sock` and injects it as `DBUS_SESSION_BUS_ADDRESS` on every child spawn. The broker intercepts method_calls on `org.fcitx.Fcitx.InputMethod1` / `InputContext1` (classifier + reply synthesizer live in `emthin-dbus::fcitx`), allocating fake IC paths and emitting typed `FcitxEvent`s. Every tick, `tick::drain_fcitx_events` hands those events to `ImeBridge::on_fcitx_event`, which shares `ime_enabled` / `pending_cursor_area` with the text_input_v3 path — so the winit window ends up with one active IC regardless of which protocol drove it. When winit delivers `Ime::Preedit` / `Commit` back, `winit.rs::WinitEvent::Ime` forwards to the active IC as DBus `UpdateFormattedPreedit` / `CommitString` signals via `DbusBroker::emit_preedit` / `emit_commit_string` before also calling `on_host_ime_event` (which feeds the text_input_v3 path for any Wayland-native client). Signal `sender` is critical: DBus clients' match rules filter by the well-known's resolved unique name (`:N.M`), so the broker learns the real fcitx5 unique name from the `GetNameOwner` reply on the bus→client direction (authoritative) with a fallback that captures `destination` off intercepted method_calls; `NameOwnerChanged(sss)` signals refresh the cache when real fcitx5 restarts.
@@ -309,16 +266,6 @@ for event in backend.take_events() {
 - `libc` for `pipe2` in the X11 backend's outgoing request path
 
 No smithay, no calloop, no tokio — the crate is runtime-agnostic.
-
-## Testing
-
-E2E coverage lives in `crates/emthin/tests/`:
-
-- `e2e_clipboard_wayland.rs` — data-control path (14 cases)
-- `e2e_clipboard_wayland_no_data_control.rs` — wl_data_device fallback (4 cases)
-- `e2e_clipboard_x11.rs` — X11 path (5 cases)
-
-Run with `cargo build -p emez && cargo test -p emthin`.
 
 ---
 
@@ -473,27 +420,17 @@ calloop / mio / tokio all work the same. Tests use plain
 
 # emthin developer patterns
 
-Patterns derived from 154 commits of git history. Use these as defaults when
+Patterns derived from git history. Use these as defaults when
 working in this repo; override only with explicit reason.
 
 ## Commit conventions
 
 This repo uses **Conventional Commits**, filtered by `cliff.toml` into the
-changelog. Distribution across the analyzed window:
+changelog.
 
-| type       | count | share | notes                                   |
-|------------|------:|------:|-----------------------------------------|
-| `feat:`    |    36 |   24% | new user-facing feature                 |
-| `fix:`     |    25 |   16% | bug fix                                 |
-| `docs:`    |    25 |   16% | README, CLAUDE.md, changelog notes      |
-| `chore:`   |    18 |   12% | releases, asset refreshes; filtered out |
-| `refactor:`|    17 |   11% | no behavior change                      |
-| `ci:`      |     8 |    5% | workflow edits                          |
-| `perf:`    |     2 |    1% | performance                             |
-
-**Scopes observed:** `release`, `ci`, `focus`, `elisp`, `key-cast`, `cli`,
-`readme`, `emthin`, `cursor_trail`. Scopes are optional but preferred when
-the change is localized — e.g. `feat(key-cast): …`, `refactor(focus): …`.
+**Scopes observed:** `release`, `ci`, `focus`, `elisp`, `cli`,
+`readme`, `emthin`. Scopes are optional but preferred when
+the change is localized — e.g. `refactor(focus): …`.
 
 `chore:`, `style:`, merge, and revert commits are stripped by `cliff.toml`.
 Pick a different type if the change deserves a changelog line.
@@ -510,30 +447,12 @@ A protocol change touches **all three**:
 2. `crates/emthin/src/ipc/dispatch.rs` — handle the variant
 3. `elisp/emthin*.el` — send/receive on the elisp side
 
-`ipc/messages.rs` uses `#[serde(rename_all = "snake_case")]`; acronyms like
-`XWaylandReady` wire as `x_wayland_ready` (not `xwayland_ready`).
-
-### New effect plugin — 5-file pattern
-
-History shows this exact sequence for every new effect (`key_cast`,
-`cursor_trail`, `jelly_cursor`, `recorder`):
-
-1. `crates/effect-plugins/src/<name>.rs` — new file, `impl Effect`
-2. `crates/effect-plugins/src/lib.rs` — `pub mod <name>;`
-3. `crates/emthin/src/state/effects.rs` — add an `Rc<RefCell<T>>` field to `EffectsState` and a `register(&mut chain, YourOverlay::new())` call inside `EffectsState::default()`
-4. `crates/emthin/src/ipc/messages.rs` + `ipc/dispatch.rs` — `Set<Name>` variant; dispatch reaches the overlay via `state.effects.<name>.borrow_mut()`
-5. `elisp/emthin-<name>.el` — `emthin-define-bool-effect` or `emthin-define-toggle` macro; auto-registered on `emthin-connected-hook`
-
-### Code change → CLAUDE.md update
-
-`crates/emthin/CLAUDE.md` accumulates non-obvious invariants, gotchas,
-and protocol quirks alongside the code. If your fix was tricky enough
-to deserve a comment, also add a bullet under the matching section.
+`OutgoingMessage::method_name()` in `messages.rs` maps `XWaylandReady` →
+`"x_wayland_ready"` (manual snake_case; no serde derives).
 
 ## Versioning & release
 
-- Workspace version lives in `[workspace.package]` in root `Cargo.toml`
-  (inherited by effect-core / effect-plugins / emthin-bar).
+- Workspace version lives in `[workspace.package]` in root `Cargo.toml`.
 - `crates/emthin/Cargo.toml` **also** keeps a literal `version = "x.y.z"`
   because cargo-aur 0.x doesn't support `version.workspace = true`. Both
   sites must stay in sync — `cargo release` bumps them together via
@@ -557,29 +476,16 @@ cargo clippy --workspace -- -D warnings
 cargo build --workspace
 ```
 
-Plus, if the change plausibly affects IPC or window lifecycle:
+If the change affects xwayland-satellite:
 
 ```
-cargo build -p emez
 cargo test -p emthin
 ```
-
-Each test spawns its own private host compositor — **emez**
-(`crates/emez/`, smithay-based headless Wayland host) for the Wayland
-variants, Xvfb for X11 — so tests never touch the developer's real
-compositor. Tests run in parallel: the harness pre-allocates a unique
-X DISPLAY number per emez/emthin pair from a process-wide reservation
-pool and passes them via `--xwayland-display`, so smithay's XWayland
-bootstrap never races.
 
 ## Code-style defaults
 
 - **Comments / logs / docs in Rust source: English only.** No Chinese in
   `.rs` files.
-- **`-p` targeting doesn't rebuild siblings.** `cargo run -p emthin` will
-  happily use a stale `emthin-bar`. Plain `cargo run` / `cargo build` hits
-  both via `default-members`; with `-p`, also run `cargo build -p emthin-bar`
-  explicitly.
 - **Never `git push` without explicit user approval.** `git commit` does not
   include push. Same for creating releases.
 

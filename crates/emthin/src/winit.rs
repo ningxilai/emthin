@@ -210,7 +210,7 @@ fn render_frame(
             [&state.workspace.active_space],
             &extras,
             damage_tracker,
-            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0],
         ) {
             tracing::error!("render_output failed: {e}");
             return;
