@@ -543,6 +543,9 @@ impl EmthinState {
         );
         if let Some(old_space) = self.workspace.space_for_mut(old_ws) {
             old_space.unmap_elem(&window);
+            // Dismiss popups so the client doesn't keep committing on
+            // orphaned popup surfaces after the toplevel is unmapped.
+            dismiss_popups_for_window(&window);
         }
         if let Some(app) = self.apps.get_mut(window_id) {
             app.workspace_id = self.workspace.active_id;
@@ -583,6 +586,12 @@ impl EmthinState {
         let Some(mut target) = self.workspace.inactive.remove(&target_id) else {
             return false;
         };
+
+        // Dismiss all popups on the outgoing workspace so clients don't
+        // continue sending commits for orphaned popup surfaces.
+        for window in self.workspace.active_space.elements() {
+            dismiss_popups_for_window(window);
+        }
 
         // Swap: current active → inactive, target → active.
         let old_space = std::mem::take(&mut self.workspace.active_space);
@@ -851,6 +860,17 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+/// Dismiss all popups attached to the given toplevel surface.
+fn dismiss_popups_for_window(window: &Window) {
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
+    let surface = toplevel.wl_surface();
+    for (popup, _) in PopupManager::popups_for_surface(surface) {
+        let _ = PopupManager::dismiss_popup(surface, &popup);
+    }
 }
 
 #[cfg(test)]

@@ -138,6 +138,10 @@ fn forward_client_selection(
         SelectionTarget::Primary => state.selection.primary_origin,
     };
 
+    tracing::debug!(
+        "forward_client_selection: target={target:?} mime_type={mime_type} origin={origin:?}"
+    );
+
     match origin {
         SelectionOrigin::Wayland => {
             let result = match target {
@@ -152,6 +156,8 @@ fn forward_client_selection(
             };
             if let Err(e) = result {
                 tracing::warn!("Failed to forward {target:?} selection to host: {e}");
+            } else {
+                tracing::debug!("forward_client_selection: {target:?} -> host ok");
             }
         }
         SelectionOrigin::Host => {

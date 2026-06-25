@@ -92,6 +92,7 @@ to snake for the wire format).  PARAMS is a plist suitable for
     (when proc
       (setq emthin--jsonrpc-conn
             (jsonrpc-process-connection
+             :name "emthin"
              :process proc
              :notification-dispatcher #'emthin--dispatch-notification
              :on-shutdown

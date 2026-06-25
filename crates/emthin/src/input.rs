@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, MouseButton, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
         keyboard::keysyms,
@@ -17,6 +17,20 @@ use smithay::{
 
 use crate::state::EmthinState;
 
+// XKB keycodes (evdev + 8, matching winit backend convention).
+const KEYCODE_LCTRL: u32 = 37;
+const KEYCODE_LALT: u32 = 64;
+const KEYCODE_C: u32 = 54;
+const KEYCODE_X: u32 = 53;
+const KEYCODE_V: u32 = 55;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranslateOp {
+    Copy,
+    Cut,
+    Paste,
+}
+
 impl EmthinState {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
@@ -27,8 +41,10 @@ impl EmthinState {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
 
-                // Peek at keysym: only Emacs prefix keys (C-x, C-c, M-x)
-                // redirect focus to Emacs; everything else goes to the focused app.
+                let focus_on_emacs =
+                    keyboard.current_focus() == self.emacs_focus_target();
+
+                let mut translate_op = None;
                 let (is_prefix, mods_changed) = keyboard.input_intercept(
                     self,
                     event.key_code(),
@@ -39,26 +55,98 @@ impl EmthinState {
                         };
                         let key = sym.raw();
 
-                        (modifiers.ctrl && matches!(key, keysyms::KEY_x | keysyms::KEY_c))
-                            || (modifiers.alt && key == keysyms::KEY_x)
+                        if focus_on_emacs {
+                            // Prefix keys (C-x, C-c, M-x) when Emacs
+                            // has keyboard focus.
+                            (modifiers.ctrl
+                                && matches!(key, keysyms::KEY_x | keysyms::KEY_c))
+                                || (modifiers.alt && key == keysyms::KEY_x)
+                        } else {
+                            // Emacs clipboard keybindings when an
+                            // embedded app has keyboard focus.
+                            if modifiers.alt && key == keysyms::KEY_w {
+                                translate_op = Some(TranslateOp::Copy);
+                                return true;
+                            }
+                            if modifiers.ctrl {
+                                match key {
+                                    keysyms::KEY_w => {
+                                        translate_op = Some(TranslateOp::Cut);
+                                        return true;
+                                    }
+                                    keysyms::KEY_y => {
+                                        translate_op = Some(TranslateOp::Paste);
+                                        return true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            false
+                        }
                     },
                 );
 
+                // Clipboard injection — suppress original, synthesise
+                // translated shortcut (press only).
+                if is_prefix && !focus_on_emacs {
+                    if event.state() == KeyState::Pressed {
+                        match translate_op {
+                            Some(TranslateOp::Copy) => {
+                                keyboard.input_forward(
+                                    self, KEYCODE_LALT.into(), KeyState::Released,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_LCTRL.into(), KeyState::Pressed,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_C.into(), KeyState::Pressed,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_C.into(), KeyState::Released,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_LCTRL.into(), KeyState::Released,
+                                    serial, time, true,
+                                );
+                            }
+                            Some(TranslateOp::Cut) => {
+                                keyboard.input_forward(
+                                    self, KEYCODE_X.into(), KeyState::Pressed,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_X.into(), KeyState::Released,
+                                    serial, time, true,
+                                );
+                            }
+                            Some(TranslateOp::Paste) => {
+                                keyboard.input_forward(
+                                    self, KEYCODE_V.into(), KeyState::Pressed,
+                                    serial, time, true,
+                                );
+                                keyboard.input_forward(
+                                    self, KEYCODE_V.into(), KeyState::Released,
+                                    serial, time, true,
+                                );
+                            }
+                            None => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Emacs prefix chord.
                 if is_prefix {
-                    // Save original focus only on first key of a chord.
-                    // If still active from a previous sequence whose
-                    // `prefix_done` was lost, we redirect to Emacs anyway
-                    // (otherwise the user gets stuck) but don't overwrite
-                    // the older saved focus.
                     if !self.focus.is_active(crate::state::FocusOverride::Prefix) {
                         self.focus.enter(
                             crate::state::FocusOverride::Prefix,
                             keyboard.current_focus(),
                         );
                     }
-                    // Suspend host IME for the duration of the chord —
-                    // see `ImeBridge::set_prefix_active`. Cleared on
-                    // `prefix_done` IPC.
                     self.ime.set_prefix_active(true);
                     if let Some(emacs) = self.emacs_focus_target() {
                         if keyboard.current_focus().as_ref() != Some(&emacs) {

@@ -135,6 +135,12 @@ impl BackendHint {
 /// successfully. Returns `None` if every hint fails.
 pub fn init(hints: &[BackendHint]) -> Option<Box<dyn ClipboardBackend>> {
     for hint in hints {
+        let label = match hint {
+            BackendHint::DataControl => "data_control",
+            BackendHint::WlDataDevice { .. } => "wl_data_device",
+            BackendHint::X11 => "x11",
+        };
+        tracing::debug!("Clipboard backend: trying {label}");
         let backend: Option<Box<dyn ClipboardBackend>> = match *hint {
             BackendHint::DataControl => crate::data_control::ClipboardProxy::new()
                 .map(|p| Box::new(p) as Box<dyn ClipboardBackend>),
@@ -147,8 +153,10 @@ pub fn init(hints: &[BackendHint]) -> Option<Box<dyn ClipboardBackend>> {
                 .map(|p| Box::new(p) as Box<dyn ClipboardBackend>),
         };
         if let Some(b) = backend {
+            tracing::info!("Clipboard backend: {label} active");
             return Some(b);
         }
+        tracing::warn!("Clipboard backend: {label} unavailable");
     }
     None
 }
