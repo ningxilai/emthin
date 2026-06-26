@@ -4,20 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::fcitx::FcitxEvent;
-
-/// A single routing rule. Serialised as JSON over the IPC channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouteRule {
-    pub id: String,
-    pub priority: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interface: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    pub target: String, // "host" | "isolated" | "deny"
-}
+use super::rule::RouteRule;
 
 /// Requests sent from emthin main → router.
 #[derive(Debug, Serialize, Deserialize)]
