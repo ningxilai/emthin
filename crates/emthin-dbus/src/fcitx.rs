@@ -43,6 +43,79 @@ use zvariant::ObjectPath;
 use crate::wire::frame::{Frame, FrameBuilder, SerialCounter};
 
 // ====================================================================
+// FcitxEvent — typed events emitted to the compositor's ImeBridge.
+// These are *not* DBus messages — they're a view onto fcitx5 state
+// changes observed during interception.
+// ====================================================================
+
+/// No longer carries `ConnId` — the compositor identifies ICs by
+/// `ic_path` alone when the router subprocess handles connections.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FcitxEvent {
+    FocusChanged { ic_path: String, focused: bool },
+    CursorRect { ic_path: String, rect: [i32; 4] },
+    IcDestroyed { ic_path: String },
+}
+
+/// Map a classified fcitx5 method_call to an optional FcitxEvent.
+/// Most methods emit nothing; only focus, cursor, and destroy are
+/// interesting to the compositor.
+pub fn method_call_to_event(method: &Fcitx5MethodCall) -> Option<FcitxEvent> {
+    match method {
+        Fcitx5MethodCall::FocusIn { input_context_path } => {
+            Some(FcitxEvent::FocusChanged { ic_path: input_context_path.clone(), focused: true })
+        }
+        Fcitx5MethodCall::FocusOut { input_context_path } => {
+            Some(FcitxEvent::FocusChanged { ic_path: input_context_path.clone(), focused: false })
+        }
+        Fcitx5MethodCall::SetCursorRect { input_context_path, x, y, w, h } => {
+            Some(FcitxEvent::CursorRect { ic_path: input_context_path.clone(), rect: [*x, *y, *w, *h] })
+        }
+        Fcitx5MethodCall::SetCursorRectV2 { input_context_path, x, y, w, h, scale } => {
+            let s = if *scale > 0.0 { *scale } else { 1.0 };
+            let tl = |v: i32| (v as f64 / s).round() as i32;
+            Some(FcitxEvent::CursorRect { ic_path: input_context_path.clone(), rect: [tl(*x), tl(*y), tl(*w), tl(*h)] })
+        }
+        Fcitx5MethodCall::SetCursorLocation { input_context_path, x, y } => {
+            Some(FcitxEvent::CursorRect { ic_path: input_context_path.clone(), rect: [*x, *y, 0, 0] })
+        }
+        Fcitx5MethodCall::DestroyIC { input_context_path } => {
+            Some(FcitxEvent::IcDestroyed { ic_path: input_context_path.clone() })
+        }
+        _ => None,
+    }
+}
+
+// ====================================================================
+// Preedit signal helpers — shared by any component that emits
+// `UpdateFormattedPreedit` signals back to a client.
+// ====================================================================
+
+pub(super) const UNDERLINE: i32 = 1 << 3;
+pub(super) const HIGHLIGHT: i32 = 1 << 4;
+
+pub(crate) fn build_preedit_chunks(
+    text: &str,
+    cursor: Option<(i32, i32)>,
+    underline: i32,
+    highlight: i32,
+) -> Vec<(String, i32)> {
+    let plain = || vec![(text.to_string(), underline)];
+    let Some((begin, end)) = cursor else { return plain(); };
+    if begin < 0 || end <= begin { return plain(); }
+    let (b, e) = (begin as usize, end as usize);
+    let len = text.len();
+    if b > len || e > len || !text.is_char_boundary(b) || !text.is_char_boundary(e) {
+        return plain();
+    }
+    let mut v = Vec::with_capacity(3);
+    if b > 0 { v.push((text[..b].to_string(), underline)); }
+    v.push((text[b..e].to_string(), underline | highlight));
+    if e < len { v.push((text[e..].to_string(), underline)); }
+    v
+}
+
+// ====================================================================
 // Constants — interfaces & well-known names this module recognizes.
 // ====================================================================
 
