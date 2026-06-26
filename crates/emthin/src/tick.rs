@@ -108,6 +108,30 @@ pub fn event_loop_tick(state: &mut EmthinState) {
     // (Alacritty etc.) whose cursor_rectangle arrives async after
     // focus.
     state.ime.poll_tip_freshness(&state.seat, &state.apps);
+
+    // --- Forward DBus router notifications to Emacs ---
+    forward_router_notifications(state);
+}
+
+/// Forward non-fcitx router notifications (rule add/remove/list) to Emacs
+/// via IPC.
+fn forward_router_notifications(state: &mut EmthinState) {
+    let notifications = state.dbus.take_router_notifications();
+    for n in notifications {
+        let msg = match n {
+            emthin_dbus::router::RouterNotification::FcitxEvent(_) => continue,
+            emthin_dbus::router::RouterNotification::RuleAdded { id, rule } => {
+                crate::ipc::OutgoingMessage::DbusRouterRuleAdded { id, rule }
+            }
+            emthin_dbus::router::RouterNotification::RuleRemoved { id } => {
+                crate::ipc::OutgoingMessage::DbusRouterRuleRemoved { id }
+            }
+            emthin_dbus::router::RouterNotification::RuleList { rules } => {
+                crate::ipc::OutgoingMessage::DbusRouterRules { rules }
+            }
+        };
+        state.ipc.send(msg);
+    }
 }
 
 /// Drain `pending_app_toplevels`, classify each as either a floating

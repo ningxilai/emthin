@@ -38,8 +38,7 @@ impl EmthinState {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
 
-                let focus_on_emacs =
-                    keyboard.current_focus() == self.emacs_focus_target();
+                let focus_on_emacs = keyboard.current_focus() == self.emacs_focus_target();
 
                 let mut translate_op = None;
                 let (is_prefix, mods_changed) = keyboard.input_intercept(
@@ -57,8 +56,7 @@ impl EmthinState {
                             // intercept true prefix keys (C-x, C-c,
                             // M-x).  Emacs itself handles M-w, C-w,
                             // C-y natively.
-                            (modifiers.ctrl
-                                && matches!(key, keysyms::KEY_x | keysyms::KEY_c))
+                            (modifiers.ctrl && matches!(key, keysyms::KEY_x | keysyms::KEY_c))
                                 || (modifiers.alt && key == keysyms::KEY_x)
                         } else {
                             // When an embedded app has keyboard focus,
@@ -498,9 +496,7 @@ impl EmthinState {
             std::env::var("WAYLAND_DISPLAY"),
             self.selection.clipboard.is_some(),
         );
-        use smithay::reexports::calloop::{
-            generic::Generic, Interest, Mode, PostAction,
-        };
+        use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction};
         use smithay::wayland::selection::data_device::set_data_device_selection;
         use smithay::wayland::selection::primary_selection::{
             request_primary_client_selection, SelectionRequestError,
@@ -523,16 +519,11 @@ impl EmthinState {
             let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[1]) };
 
             tracing::info!("M-w copy: trying mime={raw_mime}");
-            match request_primary_client_selection(
-                &self.seat,
-                raw_mime.to_string(),
-                write_fd,
-            ) {
+            match request_primary_client_selection(&self.seat, raw_mime.to_string(), write_fd) {
                 Ok(()) => {
                     tracing::info!("M-w copy: request ok, flushing display");
                     let _ = self.display_handle.flush_clients();
-                    let file =
-                        unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
+                    let file = unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
                     let mut buf: Vec<u8> = Vec::new();
                     let mime_types: Vec<String> = vec![
                         "text/plain;charset=utf-8".to_string(),
@@ -559,7 +550,10 @@ impl EmthinState {
                                     if !buf.is_empty() {
                                         state.selection.clipboard_cache =
                                             Some((mime_types.clone(), std::mem::take(&mut buf)));
-                                        tracing::info!("M-w copy: setting clipboard, {} bytes", total);
+                                        tracing::info!(
+                                            "M-w copy: setting clipboard, {} bytes",
+                                            total
+                                        );
                                         set_data_device_selection(
                                             &state.display_handle,
                                             &state.seat,

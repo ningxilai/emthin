@@ -58,7 +58,6 @@ use smithay::wayland::text_input::{TextInputHandle, TextInputManagerState, TextI
 
 use crate::apps::AppManager;
 use crate::EmthinState;
-use emthin_dbus::ConnId;
 
 /// Debounce window for `CursorRect` events following a DBus `FocusIn`.
 /// pgtk Emacs's GTK IM module fires a burst of `SetCursorRectV2`
@@ -83,7 +82,6 @@ pub enum ImeOwner {
     /// the embedded app's emthin-space top-left, captured at FocusIn
     /// — preserved across cursor events even if keyboard focus drifts.
     Dbus {
-        conn: ConnId,
         ic_path: String,
         origin: [i32; 2],
     },
@@ -93,7 +91,7 @@ pub enum ImeOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CursorCacheKey {
     Tip(WlSurface),
-    Dbus(ConnId, String),
+    Dbus(String),
 }
 
 impl ImeOwner {
@@ -103,18 +101,7 @@ impl ImeOwner {
         match (self, other) {
             (Self::None, Self::None) => true,
             (Self::Tip { surface: a }, Self::Tip { surface: b }) => a == b,
-            (
-                Self::Dbus {
-                    conn: ac,
-                    ic_path: ap,
-                    ..
-                },
-                Self::Dbus {
-                    conn: bc,
-                    ic_path: bp,
-                    ..
-                },
-            ) => ac == bc && ap == bp,
+            (Self::Dbus { ic_path: ap, .. }, Self::Dbus { ic_path: bp, .. }) => ap == bp,
             _ => false,
         }
     }
@@ -191,12 +178,12 @@ impl ImeBridge {
         }
     }
 
-    /// Public read-only view of the currently-active DBus IC, for
+    /// Public read-only view of the currently-active DBus IC path, for
     /// `winit.rs` to route `Ime::Preedit` / `Ime::Commit` events back
-    /// over the DBus broker.
-    pub fn active_dbus_ic(&self) -> Option<(ConnId, &str)> {
+    /// via the router IPC.
+    pub fn active_dbus_ic(&self) -> Option<&str> {
         match &self.owner {
-            ImeOwner::Dbus { conn, ic_path, .. } => Some((*conn, ic_path.as_str())),
+            ImeOwner::Dbus { ic_path, .. } => Some(ic_path.as_str()),
             _ => None,
         }
     }
@@ -293,14 +280,13 @@ impl ImeBridge {
                 }
             }
             ImeOwner::Dbus {
-                ref conn,
                 ref ic_path,
                 origin,
             } => {
                 self.dbus_focused_at = Some(Instant::now());
                 let cached = self
                     .cursor_cache
-                    .get(&CursorCacheKey::Dbus(*conn, ic_path.clone()))
+                    .get(&CursorCacheKey::Dbus(ic_path.clone()))
                     .copied();
                 if let Some(rect) = cached {
                     self.cursor = Some((
@@ -333,21 +319,18 @@ impl ImeBridge {
 
     // ----- Cursor reports -----
 
-    fn report_dbus_cursor(&mut self, conn: ConnId, ic_path: &str, rect: [i32; 4]) {
+    fn report_dbus_cursor(&mut self, ic_path: &str, rect: [i32; 4]) {
         let ImeOwner::Dbus {
-            conn: oc,
             ic_path: oi,
             origin,
         } = &self.owner
         else {
-            tracing::debug!(?conn, ?ic_path, "CursorRect ignored: no DBus owner");
+            tracing::debug!(?ic_path, "CursorRect ignored: no DBus owner");
             return;
         };
-        if *oc != conn || oi != ic_path {
+        if oi != ic_path {
             tracing::debug!(
-                ?conn,
                 ?ic_path,
-                active_conn = ?oc,
                 active_ic = oi,
                 "CursorRect ignored: not the active IC"
             );
@@ -360,7 +343,6 @@ impl ImeBridge {
             .unwrap_or(false);
         if self.dbus_cursor_received && in_settle {
             tracing::debug!(
-                ?conn,
                 ?ic_path,
                 client_rect = ?rect,
                 "CursorRect debounced: within FocusIn settle window"
@@ -372,7 +354,6 @@ impl ImeBridge {
             [rect[2].max(1), rect[3].max(1)],
         );
         tracing::debug!(
-            ?conn,
             ?ic_path,
             client_rect = ?rect,
             origin = ?origin,
@@ -381,9 +362,8 @@ impl ImeBridge {
         self.cursor = Some(area);
         self.cursor_is_real = true;
         self.dbus_cursor_received = true;
-        // Cache as a Rectangle for symmetry with tip cache.
         self.cursor_cache.insert(
-            CursorCacheKey::Dbus(conn, ic_path.to_string()),
+            CursorCacheKey::Dbus(ic_path.to_string()),
             Rectangle::new((rect[0], rect[1]).into(), (rect[2], rect[3]).into()),
         );
     }
@@ -485,60 +465,35 @@ impl ImeBridge {
 
         match event {
             FcitxEvent::FocusChanged {
-                conn,
                 ic_path,
                 focused: true,
             } => {
                 let origin = app_origin.unwrap_or([0, 0]);
-                tracing::debug!(?conn, ?ic_path, ?origin, "fcitx IC FocusIn → DBus owner");
+                tracing::debug!(?ic_path, ?origin, "fcitx IC FocusIn → DBus owner");
                 let ti = seat.text_input();
-                self.set_owner(
-                    ImeOwner::Dbus {
-                        conn,
-                        ic_path,
-                        origin,
-                    },
-                    ti,
-                    apps,
-                );
+                self.set_owner(ImeOwner::Dbus { ic_path, origin }, ti, apps);
             }
             FcitxEvent::FocusChanged {
-                conn,
                 ic_path,
                 focused: false,
             } => {
-                if let ImeOwner::Dbus {
-                    conn: oc,
-                    ic_path: oi,
-                    ..
-                } = &self.owner
-                {
-                    if *oc == conn && oi == &ic_path {
-                        tracing::debug!(?conn, ?ic_path, "fcitx IC FocusOut → clearing owner");
+                if let ImeOwner::Dbus { ic_path: oi, .. } = &self.owner {
+                    if oi == &ic_path {
+                        tracing::debug!(?ic_path, "fcitx IC FocusOut → clearing owner");
                         self.clear_owner();
                     }
                 }
             }
-            FcitxEvent::CursorRect {
-                conn,
-                ic_path,
-                rect,
-            } => {
-                self.report_dbus_cursor(conn, &ic_path, rect);
+            FcitxEvent::CursorRect { ic_path, rect } => {
+                self.report_dbus_cursor(&ic_path, rect);
             }
-            FcitxEvent::IcDestroyed { conn, ic_path } => {
-                if let ImeOwner::Dbus {
-                    conn: oc,
-                    ic_path: oi,
-                    ..
-                } = &self.owner
-                {
-                    if *oc == conn && oi == &ic_path {
+            FcitxEvent::IcDestroyed { ic_path } => {
+                if let ImeOwner::Dbus { ic_path: oi, .. } = &self.owner {
+                    if oi == &ic_path {
                         self.clear_owner();
                     }
                 }
-                self.cursor_cache
-                    .remove(&CursorCacheKey::Dbus(conn, ic_path));
+                self.cursor_cache.remove(&CursorCacheKey::Dbus(ic_path));
             }
         }
     }
@@ -675,15 +630,12 @@ fn focused_client_has_text_input(ti: &TextInputHandle) -> bool {
     found
 }
 
-/// Drain broker-observed fcitx5 events and hand them to the IME
+/// Drain fcitx5 events from the router IPC and hand them to the IME
 /// bridge. Each event is translated relative to the currently focused
 /// embedded app's emthin-space origin so the cursor rect reaches
 /// winit in emthin-winit-local coordinates.
 pub(crate) fn drain_fcitx_events(state: &mut crate::EmthinState) {
-    let Some(broker) = state.dbus.broker.as_mut() else {
-        return;
-    };
-    let events = broker.drain_events();
+    let events = state.dbus.take_fcitx_events();
     if events.is_empty() {
         return;
     }
@@ -722,41 +674,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_key_dbus_distinguishes_conn_and_ic() {
-        let a = CursorCacheKey::Dbus(ConnId::new_for_test(1), "/ic/1".into());
-        let b = CursorCacheKey::Dbus(ConnId::new_for_test(1), "/ic/2".into());
-        let c = CursorCacheKey::Dbus(ConnId::new_for_test(2), "/ic/1".into());
+    fn cache_key_dbus_distinguishes_ic_path() {
+        let a = CursorCacheKey::Dbus("/ic/1".into());
+        let b = CursorCacheKey::Dbus("/ic/2".into());
         assert_ne!(a, b);
-        assert_ne!(a, c);
     }
 
     #[test]
     fn ime_owner_same_identity_dbus_ignores_origin() {
         let a = ImeOwner::Dbus {
-            conn: ConnId::new_for_test(1),
             ic_path: "/ic/1".into(),
             origin: [10, 20],
         };
         let b = ImeOwner::Dbus {
-            conn: ConnId::new_for_test(1),
             ic_path: "/ic/1".into(),
             origin: [99, 99],
         };
-        assert!(
-            a.same_identity_as(&b),
-            "same conn + ic_path = same identity"
-        );
+        assert!(a.same_identity_as(&b), "same ic_path = same identity");
     }
 
     #[test]
     fn ime_owner_same_identity_dbus_distinguishes_ic_path() {
         let a = ImeOwner::Dbus {
-            conn: ConnId::new_for_test(1),
             ic_path: "/ic/1".into(),
             origin: [0, 0],
         };
         let b = ImeOwner::Dbus {
-            conn: ConnId::new_for_test(1),
             ic_path: "/ic/2".into(),
             origin: [0, 0],
         };

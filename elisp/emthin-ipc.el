@@ -126,5 +126,38 @@ to snake for the wire format).  PARAMS is a plist suitable for
     (error
      (message "emthin: notification dispatch error (%s): %s" method err))))
 
+;; ---------------------------------------------------------------------------
+;; DBus router rule management
+;; ---------------------------------------------------------------------------
+
+(defun emthin-dbus-router-add-rule (id destination interface method priority target)
+  "Add a routing rule via IPC.
+ID is a unique string identifier.
+DESTINATION, INTERFACE, METHOD are glob patterns (or nil for wildcard).
+PRIORITY is an integer. TARGET is \"host\", \"isolated\", or \"deny\"."
+  (emthin--send 'dbus_router_add_rule
+                `(:rule ,(emthin--dbus-rule-to-plist
+                          id destination interface method priority target))))
+
+(defun emthin-dbus-router-remove-rule (id)
+  "Remove routing rule with ID via IPC."
+  (emthin--send 'dbus_router_remove_rule `(:id ,id)))
+
+(defun emthin-dbus-router-list-rules ()
+  "Request the list of current routing rules via IPC.
+The result arrives as a `dbus_router_rules' notification."
+  (emthin--send 'dbus_router_list_rules nil))
+
+(defun emthin--dbus-rule-to-plist (id destination interface method priority target)
+  "Convert rule fields to a plist for JSON serialization."
+  (let ((plist `(:id ,id :priority ,priority :target ,target)))
+    (when destination
+      (setq plist (plist-put plist :destination destination)))
+    (when interface
+      (setq plist (plist-put plist :interface interface)))
+    (when method
+      (setq plist (plist-put plist :method method)))
+    plist))
+
 (provide 'emthin-ipc)
 ;;; emthin-ipc.el ends here

@@ -213,7 +213,10 @@ mod tests {
             method: None,
             target: "host".into(),
         }]);
-        assert_eq!(table.route_str(Some("org.chromium.X"), None, None), Some("host"));
+        assert_eq!(
+            table.route_str(Some("org.chromium.X"), None, None),
+            Some("host")
+        );
     }
 
     #[test]
@@ -253,7 +256,11 @@ mod tests {
             },
         ]);
         assert_eq!(
-            table.route_str(Some("org.example.Service"), Some("org.example.Interface"), Some("DoThing")),
+            table.route_str(
+                Some("org.example.Service"),
+                Some("org.example.Interface"),
+                Some("DoThing")
+            ),
             Some("host")
         );
     }
@@ -295,7 +302,11 @@ mod tests {
             target: "host".into(),
         }]);
         assert_eq!(
-            table.route_str(Some("org.unrelated.X"), Some("org.unrelated.Iface"), Some("Method")),
+            table.route_str(
+                Some("org.unrelated.X"),
+                Some("org.unrelated.Iface"),
+                Some("Method")
+            ),
             None
         );
     }
@@ -310,7 +321,10 @@ mod tests {
             method: None,
             target: "deny".into(),
         }]);
-        assert_eq!(table.route_str(Some("org.evil.App"), None, None), Some("deny"));
+        assert_eq!(
+            table.route_str(Some("org.evil.App"), None, None),
+            Some("deny")
+        );
     }
 
     #[test]

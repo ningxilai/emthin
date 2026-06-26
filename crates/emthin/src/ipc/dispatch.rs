@@ -48,6 +48,22 @@ pub fn handle_ipc_message(state: &mut EmthinState, msg: IncomingMessage) {
             // (before keyboard.set_focus to avoid race conditions).
             state.switch_workspace(workspace_id);
         }
+        IncomingMessage::DbusRouterAddRule { rule } => {
+            tracing::debug!("IPC dbus_router_add_rule id={}", rule.id);
+            state
+                .dbus
+                .send_rpc(&emthin_dbus::RouterRequest::AddRule { rule });
+        }
+        IncomingMessage::DbusRouterRemoveRule { id } => {
+            tracing::debug!("IPC dbus_router_remove_rule id={id}");
+            state
+                .dbus
+                .send_rpc(&emthin_dbus::RouterRequest::RemoveRule { id });
+        }
+        IncomingMessage::DbusRouterListRules => {
+            tracing::debug!("IPC dbus_router_list_rules");
+            state.dbus.send_rpc(&emthin_dbus::RouterRequest::ListRules);
+        }
     }
 }
 

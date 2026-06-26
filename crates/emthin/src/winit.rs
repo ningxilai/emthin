@@ -372,42 +372,31 @@ pub fn init_winit(
                 WinitEvent::Ime(event) => {
                     tracing::debug!("winit Ime event: {event:?}");
 
-                    // Relay to the DBus fcitx5 active IC first so
+                    // Relay to the DBus fcitx5 active IC via router IPC so
                     // embedded clients (WeChat / Electron via
-                    // GTK_IM_MODULE=fcitx) receive inline preedit +
-                    // commit. Clone the active IC handle out so we
-                    // can take a mutable borrow of `state.dbus`
-                    // without conflicting with `state.ime`.
-                    if let Some((conn, ic_path)) =
-                        state.ime.active_dbus_ic().map(|(c, p)| (c, p.to_string()))
-                    {
-                        if let Some(broker) = state.dbus.broker.as_mut() {
-                            match &event {
-                                winit_crate::event::Ime::Commit(text) => {
-                                    if let Err(e) =
-                                        broker.emit_commit_string(conn, &ic_path, text)
-                                    {
-                                        tracing::warn!(error = %e, "dbus: emit CommitString failed");
-                                    }
-                                }
-                                winit_crate::event::Ime::Preedit(text, cursor) => {
-                                    // Pass full (begin, end) range — broker
-                                    // splits the text into chunks so the
-                                    // active segment renders with HighLight,
-                                    // matching native text_input_v3 clients.
-                                    let cursor_range =
-                                        cursor.map(|(b, e)| (b as i32, e as i32));
-                                    if let Err(e) = broker.emit_preedit(
-                                        conn,
-                                        &ic_path,
-                                        text,
-                                        cursor_range,
-                                    ) {
-                                        tracing::warn!(error = %e, "dbus: emit UpdateFormattedPreedit failed");
-                                    }
-                                }
-                                _ => {}
+                    // GTK_IM_MODULE=fcitx) receive inline preedit + commit.
+                    if let Some(ic_path) = state.ime.active_dbus_ic().map(|p| p.to_string()) {
+                        match &event {
+                            winit_crate::event::Ime::Commit(text) => {
+                                state.dbus.send_rpc(&emthin_dbus::RouterRequest::ImeCommit {
+                                    ic_path: ic_path.clone(),
+                                    text: text.clone(),
+                                });
                             }
+                            winit_crate::event::Ime::Preedit(text, cursor) => {
+                                let (cursor_begin, cursor_end) = cursor
+                                    .map(|(b, e)| (b as i32, e as i32))
+                                    .unwrap_or((-1, -1));
+                                state
+                                    .dbus
+                                    .send_rpc(&emthin_dbus::RouterRequest::ImePreedit {
+                                        ic_path,
+                                        text: text.clone(),
+                                        cursor_begin,
+                                        cursor_end,
+                                    });
+                            }
+                            _ => {}
                         }
                     }
 

@@ -56,6 +56,16 @@ pub enum IncomingMessage {
     SwitchWorkspace {
         workspace_id: u64,
     },
+    /// Add a DBus routing rule.
+    DbusRouterAddRule {
+        rule: emthin_dbus::router::RouteRule,
+    },
+    /// Remove a DBus routing rule by id.
+    DbusRouterRemoveRule {
+        id: String,
+    },
+    /// List all current DBus routing rules.
+    DbusRouterListRules,
 }
 
 /// emthin → Emacs
@@ -101,6 +111,19 @@ pub enum OutgoingMessage {
     /// A workspace was destroyed (Emacs frame closed).
     WorkspaceDestroyed {
         workspace_id: u64,
+    },
+    /// Current DBus routing rules (response to ListRules).
+    DbusRouterRules {
+        rules: Vec<emthin_dbus::router::RouteRule>,
+    },
+    /// A rule was added.
+    DbusRouterRuleAdded {
+        id: String,
+        rule: emthin_dbus::router::RouteRule,
+    },
+    /// A rule was removed.
+    DbusRouterRuleRemoved {
+        id: String,
     },
 }
 
@@ -163,6 +186,16 @@ impl IncomingMessage {
             "switch_workspace" => Self::SwitchWorkspace {
                 workspace_id: params_get_u64(params, "workspace_id")?,
             },
+            "dbus_router_add_rule" => {
+                let rule: emthin_dbus::router::RouteRule =
+                    serde_json::from_value(params["rule"].clone())
+                        .map_err(|e| format!("invalid rule: {e}"))?;
+                Self::DbusRouterAddRule { rule }
+            }
+            "dbus_router_remove_rule" => Self::DbusRouterRemoveRule {
+                id: params_get_string(params, "id")?,
+            },
+            "dbus_router_list_rules" => Self::DbusRouterListRules,
             other => return Err(format!("unknown IPC method: {other}")),
         })
     }
@@ -187,6 +220,13 @@ fn params_get_bool(params: &serde_json::Value, key: &str) -> Result<bool, String
         .ok_or_else(|| format!("missing/invalid field '{key}'"))
 }
 
+fn params_get_string(params: &serde_json::Value, key: &str) -> Result<String, String> {
+    params[key]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| format!("missing/invalid field '{key}'"))
+}
+
 impl OutgoingMessage {
     pub fn method_name(&self) -> &'static str {
         match self {
@@ -200,6 +240,9 @@ impl OutgoingMessage {
             Self::WorkspaceCreated { .. } => "workspace_created",
             Self::WorkspaceSwitched { .. } => "workspace_switched",
             Self::WorkspaceDestroyed { .. } => "workspace_destroyed",
+            Self::DbusRouterRules { .. } => "dbus_router_rules",
+            Self::DbusRouterRuleAdded { .. } => "dbus_router_rule_added",
+            Self::DbusRouterRuleRemoved { .. } => "dbus_router_rule_removed",
         }
     }
 
@@ -230,6 +273,16 @@ impl OutgoingMessage {
             }
             Self::WorkspaceDestroyed { workspace_id } => {
                 serde_json::json!({"workspace_id": workspace_id})
+            }
+            Self::DbusRouterRules { rules } => {
+                serde_json::json!({"rules": serde_json::to_value(rules).unwrap_or_default()})
+            }
+            Self::DbusRouterRuleAdded { id, rule } => serde_json::json!({
+                "id": id,
+                "rule": serde_json::to_value(rule).unwrap_or_default(),
+            }),
+            Self::DbusRouterRuleRemoved { id } => {
+                serde_json::json!({"id": id})
             }
         }
     }

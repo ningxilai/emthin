@@ -3,18 +3,25 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::fcitx::FcitxEvent;
 use super::rule::RouteRule;
+use crate::fcitx::FcitxEvent;
 
 /// Requests sent from emthin main → router.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum RouterRequest {
-    AddRule { rule: RouteRule },
-    RemoveRule { id: String },
+    AddRule {
+        rule: RouteRule,
+    },
+    RemoveRule {
+        id: String,
+    },
     ListRules,
     #[serde(rename = "ime_commit")]
-    ImeCommit { ic_path: String, text: String },
+    ImeCommit {
+        ic_path: String,
+        text: String,
+    },
     #[serde(rename = "ime_preedit")]
     ImePreedit {
         ic_path: String,
@@ -31,10 +38,9 @@ pub enum RouterNotification {
     #[serde(rename = "fcitx_event")]
     FcitxEvent(FcitxEvent),
     #[serde(rename = "rule_added")]
-    RuleAdded {
-        id: String,
-        rule: RouteRule,
-    },
+    RuleAdded { id: String, rule: RouteRule },
     #[serde(rename = "rule_removed")]
     RuleRemoved { id: String },
+    #[serde(rename = "rule_list")]
+    RuleList { rules: Vec<RouteRule> },
 }
