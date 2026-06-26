@@ -1,10 +1,11 @@
-/// Geometry rectangle from Emacs IPC (logical pixels, Emacs-relative).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Geometry rectangle as fractions of the Emacs frame (0..=1 range).
+/// The compositor converts to/from pixels using `usable_area()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IpcRect {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 /// Emacs → emthin
@@ -28,25 +29,6 @@ pub enum IncomingMessage {
     /// `prefix_active` so host IME can resume — focus is left
     /// wherever Emacs's prefix command put it.
     PrefixClear,
-    AddMirror {
-        window_id: u64,
-        view_id: u64,
-        rect: IpcRect,
-    },
-    UpdateMirrorGeometry {
-        window_id: u64,
-        view_id: u64,
-        rect: IpcRect,
-    },
-    RemoveMirror {
-        window_id: u64,
-        view_id: u64,
-    },
-    /// Source was deleted; promote this mirror to become the new source.
-    PromoteMirror {
-        window_id: u64,
-        view_id: u64,
-    },
     /// Tell the compositor which surface should have keyboard focus.
     /// `window_id: None` means focus Emacs; `Some(id)` means focus that app.
     SetFocus {
@@ -91,10 +73,8 @@ pub enum OutgoingMessage {
         height: i32,
     },
     /// User clicked on an embedded app — Emacs should select the corresponding window.
-    /// view_id=0 means the source window; otherwise it's a mirror view_id.
     FocusView {
         window_id: u64,
-        view_id: u64,
     },
     /// XWayland is ready — Emacs can set DISPLAY=:<display> for X11 apps.
     XWaylandReady {
@@ -125,6 +105,11 @@ pub enum OutgoingMessage {
     DbusRouterRuleRemoved {
         id: String,
     },
+    /// An embedded app window was resized by the user (mouse resize).
+    WindowResized {
+        window_id: u64,
+        rect: IpcRect,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -137,10 +122,10 @@ impl IncomingMessage {
             "set_geometry" => Self::SetGeometry {
                 window_id: params_get_u64(params, "window_id")?,
                 rect: IpcRect {
-                    x: params_get_i32(params, "x")?,
-                    y: params_get_i32(params, "y")?,
-                    w: params_get_i32(params, "w")?,
-                    h: params_get_i32(params, "h")?,
+                    x: params_get_f64(params, "x")?,
+                    y: params_get_f64(params, "y")?,
+                    w: params_get_f64(params, "w")?,
+                    h: params_get_f64(params, "h")?,
                 },
             },
             "close" => Self::Close {
@@ -152,34 +137,6 @@ impl IncomingMessage {
             },
             "prefix_done" => Self::PrefixDone,
             "prefix_clear" => Self::PrefixClear,
-            "add_mirror" => Self::AddMirror {
-                window_id: params_get_u64(params, "window_id")?,
-                view_id: params_get_u64(params, "view_id")?,
-                rect: IpcRect {
-                    x: params_get_i32(params, "x")?,
-                    y: params_get_i32(params, "y")?,
-                    w: params_get_i32(params, "w")?,
-                    h: params_get_i32(params, "h")?,
-                },
-            },
-            "update_mirror_geometry" => Self::UpdateMirrorGeometry {
-                window_id: params_get_u64(params, "window_id")?,
-                view_id: params_get_u64(params, "view_id")?,
-                rect: IpcRect {
-                    x: params_get_i32(params, "x")?,
-                    y: params_get_i32(params, "y")?,
-                    w: params_get_i32(params, "w")?,
-                    h: params_get_i32(params, "h")?,
-                },
-            },
-            "remove_mirror" => Self::RemoveMirror {
-                window_id: params_get_u64(params, "window_id")?,
-                view_id: params_get_u64(params, "view_id")?,
-            },
-            "promote_mirror" => Self::PromoteMirror {
-                window_id: params_get_u64(params, "window_id")?,
-                view_id: params_get_u64(params, "view_id")?,
-            },
             "set_focus" => Self::SetFocus {
                 window_id: params.get("window_id").and_then(|v| v.as_u64()),
             },
@@ -207,11 +164,10 @@ fn params_get_u64(params: &serde_json::Value, key: &str) -> Result<u64, String> 
         .ok_or_else(|| format!("missing/invalid field '{key}'"))
 }
 
-fn params_get_i32(params: &serde_json::Value, key: &str) -> Result<i32, String> {
+fn params_get_f64(params: &serde_json::Value, key: &str) -> Result<f64, String> {
     params[key]
-        .as_i64()
+        .as_f64()
         .ok_or_else(|| format!("missing/invalid field '{key}'"))
-        .map(|v| v as i32)
 }
 
 fn params_get_bool(params: &serde_json::Value, key: &str) -> Result<bool, String> {
@@ -243,6 +199,7 @@ impl OutgoingMessage {
             Self::DbusRouterRules { .. } => "dbus_router_rules",
             Self::DbusRouterRuleAdded { .. } => "dbus_router_rule_added",
             Self::DbusRouterRuleRemoved { .. } => "dbus_router_rule_removed",
+            Self::WindowResized { .. } => "window_resized",
         }
     }
 
@@ -261,8 +218,8 @@ impl OutgoingMessage {
             Self::SurfaceSize { width, height } => {
                 serde_json::json!({"width": width, "height": height})
             }
-            Self::FocusView { window_id, view_id } => {
-                serde_json::json!({"window_id": window_id, "view_id": view_id})
+            Self::FocusView { window_id } => {
+                serde_json::json!({"window_id": window_id})
             }
             Self::XWaylandReady { display } => serde_json::json!({"display": display}),
             Self::WorkspaceCreated { workspace_id } => {
@@ -284,6 +241,16 @@ impl OutgoingMessage {
             Self::DbusRouterRuleRemoved { id } => {
                 serde_json::json!({"id": id})
             }
+            Self::WindowResized {
+                window_id,
+                rect: IpcRect { x, y, w, h },
+            } => serde_json::json!({
+                "window_id": window_id,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+            }),
         }
     }
 }
@@ -294,17 +261,17 @@ mod tests {
 
     #[test]
     fn parses_set_geometry() {
-        let params = serde_json::json!({"window_id":42,"x":10,"y":20,"w":800,"h":600});
+        let params = serde_json::json!({"window_id":42,"x":0.5,"y":0.3,"w":0.4,"h":0.6});
         let msg = IncomingMessage::from_jsonrpc("set_geometry", &params).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SetGeometry {
                 window_id: 42,
                 rect: IpcRect {
-                    x: 10,
-                    y: 20,
-                    w: 800,
-                    h: 600
+                    x: 0.5,
+                    y: 0.3,
+                    w: 0.4,
+                    h: 0.6
                 }
             }
         ));
@@ -334,20 +301,6 @@ mod tests {
     fn parses_prefix_done() {
         let msg = IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
         assert!(matches!(msg, IncomingMessage::PrefixDone));
-    }
-
-    #[test]
-    fn parses_add_mirror() {
-        let params = serde_json::json!({"window_id":1,"view_id":2,"x":0,"y":0,"w":400,"h":300});
-        let msg = IncomingMessage::from_jsonrpc("add_mirror", &params).unwrap();
-        assert!(matches!(
-            msg,
-            IncomingMessage::AddMirror {
-                window_id: 1,
-                view_id: 2,
-                ..
-            }
-        ));
     }
 
     #[test]

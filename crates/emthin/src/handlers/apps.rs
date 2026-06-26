@@ -37,7 +37,6 @@ pub fn register_embedded_app(
         pending_geometry: None,
         pending_since: None,
         visible: false,
-        mirrors: std::collections::HashMap::new(),
     });
 
     state

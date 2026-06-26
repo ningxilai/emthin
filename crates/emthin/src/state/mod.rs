@@ -27,24 +27,20 @@ use smithay::{
             Display, DisplayHandle,
         },
     },
-    utils::{Logical, Point, Rectangle},
+    utils::{Logical, Point, Rectangle, Size},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufGlobal, DmabufState},
         fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
-        pointer_constraints::PointerConstraintsState,
         relative_pointer::RelativePointerManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         selection::{
             ext_data_control::DataControlState as ExtDataControlState,
             wlr_data_control::DataControlState as WlrDataControlState,
         },
-        shell::{
-            wlr_layer::WlrLayerShellState,
-            xdg::{decoration::XdgDecorationState, XdgShellState},
-        },
+        shell::xdg::{decoration::XdgDecorationState, XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
@@ -79,8 +75,6 @@ pub enum SelectionOrigin {
 pub enum FocusOverride {
     /// Emacs C-x / C-c / M-x chord redirected focus to Emacs.
     Prefix,
-    /// A layer-shell client (zofi / wofi / rofi) grabbed focus.
-    Layer,
     /// Emthin's window itself lost host-level focus (Alt+Tab away).
     Host,
 }
@@ -157,7 +151,6 @@ pub struct WaylandState {
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub viewporter_state: ViewporterState,
     pub xdg_decoration_state: XdgDecorationState,
-    pub layer_shell_state: WlrLayerShellState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     /// Advertise `zwlr_data_control_v1` and `ext_data_control_v1` to
     /// emthin's own internal clients so they can exchange selections
@@ -170,9 +163,6 @@ pub struct WaylandState {
     pub dmabuf_state: DmabufState,
     /// Keep-alive: dropping this removes the linux-dmabuf global from the display.
     pub dmabuf_global: Option<DmabufGlobal>,
-    /// Exposes `zwp_pointer_constraints_v1` — lock/confine pointer for games
-    /// (Minecraft, Blender, browser Pointer Lock).
-    pub pointer_constraints_state: PointerConstraintsState,
     /// Exposes `zwp_relative_pointer_manager_v1` — delivers raw mouse deltas
     /// to clients that bind the protocol (required for FPS camera control).
     pub relative_pointer_manager_state: RelativePointerManagerState,
@@ -265,10 +255,8 @@ impl EmthinState {
         let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
         let ime = crate::ime::ImeBridge::new(&dh);
-        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&dh);
         let relative_pointer_manager_state = RelativePointerManagerState::new::<Self>(&dh);
         let dmabuf_state = DmabufState::new();
 
@@ -333,13 +321,11 @@ impl EmthinState {
                 fractional_scale_manager_state,
                 viewporter_state,
                 xdg_decoration_state,
-                layer_shell_state,
                 cursor_shape_manager_state,
                 wlr_data_control_state,
                 ext_data_control_state,
                 dmabuf_state,
                 dmabuf_global: None,
-                pointer_constraints_state,
                 relative_pointer_manager_state,
                 popups,
             },
@@ -423,36 +409,55 @@ impl EmthinState {
         Some(Rectangle::new((0, 0).into(), logical))
     }
 
-    /// Translate an Emacs surface-local rect into canvas coordinates by
-    /// adding the current usable-area origin. Used by every IPC geometry
-    /// handler — a top-anchored layer surface (bar) shifts the origin and
-    /// all rects must track.
-    pub fn emacs_rect_to_canvas(&self, rect: crate::ipc::IpcRect) -> Rectangle<i32, Logical> {
+    /// Convert a fraction rect (0..=1 relative to usable area) into
+    /// canvas pixel coordinates.
+    pub fn fraction_to_canvas(&self, rect: crate::ipc::IpcRect) -> Rectangle<i32, Logical> {
+        let area = self.usable_area();
         let crate::ipc::IpcRect { x, y, w, h } = rect;
-        let origin = self.emacs_geometry().map(|g| g.loc).unwrap_or_default();
         Rectangle::new(
-            smithay::utils::Point::from((x + origin.x, y + origin.y)),
-            smithay::utils::Size::from((w, h)),
+            smithay::utils::Point::from((
+                area.loc.x + (x * area.size.w as f64).round() as i32,
+                area.loc.y + (y * area.size.h as f64).round() as i32,
+            )),
+            smithay::utils::Size::from((
+                (w * area.size.w as f64).round() as i32,
+                (h * area.size.h as f64).round() as i32,
+            )),
         )
     }
 
-    /// Rect available for tiled clients (Emacs) after subtracting exclusive
-    /// zones of anchored layer surfaces (e.g. the external workspace bar).
-    /// Delegates to smithay's `LayerMap::non_exclusive_zone()`; falls back to
-    /// full output when no layers or no output.
+    /// Convert canvas pixel coordinates back to a fraction rect (0..=1
+    /// relative to usable area). Used by resize-grab to emit IPC.
+    pub fn canvas_to_fraction(
+        &self,
+        loc: Point<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> crate::ipc::IpcRect {
+        let area = self.usable_area();
+        crate::ipc::IpcRect {
+            x: (loc.x - area.loc.x) as f64 / area.size.w as f64,
+            y: (loc.y - area.loc.y) as f64 / area.size.h as f64,
+            w: size.w as f64 / area.size.w as f64,
+            h: size.h as f64 / area.size.h as f64,
+        }
+    }
+
+    /// Full output size in logical pixels — Emacs fills the entire window.
     pub fn usable_area(&self) -> Rectangle<i32, Logical> {
         let Some(output) = self.workspace.active_space.outputs().next() else {
             return Rectangle::default();
         };
-        smithay::desktop::layer_map_for_output(output).non_exclusive_zone()
+        let Some(mode) = output.current_mode() else {
+            return Rectangle::default();
+        };
+        let scale = output.current_scale().fractional_scale();
+        Rectangle::new(
+            (0, 0).into(),
+            mode.size.to_f64().to_logical(scale).to_i32_round(),
+        )
     }
 
-    /// Geometry for Emacs frame — fills the non-exclusive zone.
-    ///
-    /// Returns `None` only when there's no output. Otherwise returns whatever
-    /// `LayerMap` reports as the tiled-client region; external bars can claim
-    /// space by setting `exclusive_zone` on their layer surfaces and the
-    /// geometry adjusts automatically.
+    /// Geometry for Emacs frame — fills the full output.
     pub fn emacs_geometry(&self) -> Option<Rectangle<i32, Logical>> {
         self.workspace.active_space.outputs().next()?;
         Some(self.usable_area())
@@ -483,10 +488,7 @@ impl EmthinState {
     /// Mirrors sway's `view_map()` → `input_manager_set_focus()`
     /// pipeline. Single entry point for xdg_shell `new_toplevel`.
     pub fn auto_focus_new_window(&mut self, window: Window, window_id: u64) {
-        let focus_view = crate::ipc::OutgoingMessage::FocusView {
-            window_id,
-            view_id: 0,
-        };
+        let focus_view = crate::ipc::OutgoingMessage::FocusView { window_id };
 
         // Prefix sequence active: the user is typing C-x ... , any focus
         // steal would break the sequence. Still inform Emacs so its
@@ -504,18 +506,11 @@ impl EmthinState {
     }
 
     /// Resolve a `wl_surface` to the keyboard focus target that owns it.
-    /// Searches layer-shell surfaces, toplevels in the active `Space`, and
-    /// tracked popups — returning the first hit in that order.
+    /// Searches toplevels in the active `Space` and tracked popups.
     pub fn focus_target_for_surface(
         &self,
         surface: &WlSurface,
     ) -> Option<crate::KeyboardFocusTarget> {
-        if let Some(output) = self.workspace.active_space.outputs().next() {
-            let map = smithay::desktop::layer_map_for_output(output);
-            if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
-                return Some(crate::KeyboardFocusTarget::from(layer.clone()));
-            }
-        }
         if let Some(window) = self
             .workspace
             .active_space
@@ -697,50 +692,6 @@ impl EmthinState {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        // 1. Check mirror regions first — they overlay Emacs visually.
-        //    Use app.geometry (always available) instead of space.element_geometry
-        //    because the source window may be unmapped (visible=false).
-        if let Some((window_id, _view_id, mapped_pos)) =
-            self.apps.mirror_under(pos, self.workspace.active_id)
-        {
-            if let Some(app) = self.apps.get(window_id) {
-                if let Some(geo) = app.geometry {
-                    // Compensate window_geometry (CSD shadow offset) — same
-                    // as the space path where render_location = space_loc - wg.
-                    let wg = app.window.geometry().loc;
-                    let local = mapped_pos - geo.loc.to_f64() + wg.to_f64();
-                    let result =
-                        app.window
-                            .surface_under(local, WindowSurfaceType::ALL)
-                            .map(|(s, p)| {
-                                let surface_global = (p + geo.loc - wg).to_f64();
-                                let offset = pos - mapped_pos;
-                                (s, surface_global + offset)
-                            });
-                    tracing::debug!(
-                        "mirror surface_under: pos=({:.0},{:.0}) mapped=({:.0},{:.0}) \
-                         local=({:.0},{:.0}) geo=({},{}) hit={}",
-                        pos.x,
-                        pos.y,
-                        mapped_pos.x,
-                        mapped_pos.y,
-                        local.x,
-                        local.y,
-                        geo.loc.x,
-                        geo.loc.y,
-                        result.is_some(),
-                    );
-                    return result;
-                }
-            }
-        }
-
-        // 2. Layer surfaces take priority over space (launchers must intercept input).
-        if let Some(hit) = self.layer_surface_under(pos) {
-            return Some(hit);
-        }
-
-        // 3. Space elements.
         self.workspace
             .active_space
             .element_under(pos)
@@ -749,33 +700,6 @@ impl EmthinState {
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                     .map(|(s, p)| (s, (p + location).to_f64()))
             })
-    }
-
-    fn layer_surface_under(
-        &self,
-        pos: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        use smithay::desktop::layer_map_for_output;
-        use smithay::wayland::shell::wlr_layer::Layer;
-
-        let output = self.workspace.active_space.outputs().next()?;
-        let map = layer_map_for_output(output);
-
-        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
-            if let Some(surface) = map.layer_under(layer, pos) {
-                let Some(layer_geo) = map.layer_geometry(surface) else {
-                    continue;
-                };
-                let local = pos - layer_geo.loc.to_f64();
-                if let Some((wl_surface, offset)) =
-                    surface.surface_under(local, WindowSurfaceType::ALL)
-                {
-                    return Some((wl_surface, (offset + layer_geo.loc).to_f64()));
-                }
-            }
-        }
-
-        None
     }
 }
 
@@ -787,9 +711,8 @@ impl crate::xwayland_satellite::HasXwls for EmthinState {
 
 impl EmthinState {
     /// Reposition + resize all Emacs frames (active + inactive workspaces) to
-    /// match the current non-exclusive zone, and broadcast the new size to
-    /// elisp. Call whenever layer surfaces claim/release space (new layer
-    /// mapped, layer destroyed, exclusive_zone changed on commit).
+    /// match the current output size, and broadcast the new size to
+    /// elisp.
     pub fn relayout_emacs(&mut self) {
         let Some(geo) = self.emacs_geometry() else {
             return;
@@ -891,7 +814,6 @@ mod focus_state_tests {
     fn default_has_no_active_overrides() {
         let f = FocusState::default();
         assert!(!f.is_active(FocusOverride::Prefix));
-        assert!(!f.is_active(FocusOverride::Layer));
         assert!(!f.is_active(FocusOverride::Host));
     }
 
@@ -900,7 +822,6 @@ mod focus_state_tests {
         let mut f = FocusState::default();
         f.enter(FocusOverride::Prefix, None);
         assert!(f.is_active(FocusOverride::Prefix));
-        assert!(!f.is_active(FocusOverride::Layer));
     }
 
     #[test]
@@ -922,11 +843,9 @@ mod focus_state_tests {
     fn reset_clears_all_overrides() {
         let mut f = FocusState::default();
         f.enter(FocusOverride::Prefix, None);
-        f.enter(FocusOverride::Layer, None);
         f.enter(FocusOverride::Host, None);
         f.reset_on_workspace_switch();
         assert!(!f.is_active(FocusOverride::Prefix));
-        assert!(!f.is_active(FocusOverride::Layer));
         assert!(!f.is_active(FocusOverride::Host));
     }
 

@@ -6,9 +6,7 @@ use smithay::{
         input::KeyState,
         renderer::{
             damage::OutputDamageTracker,
-            element::{
-                surface::render_elements_from_surface_tree, texture::TextureRenderElement, Id, Kind,
-            },
+            element::{texture::TextureRenderElement, Id, Kind},
             gles::{GlesRenderer, GlesTexture},
             utils::{import_surface_tree, RendererSurfaceStateUserData},
             Renderer,
@@ -81,48 +79,6 @@ fn apply_pending_state(state: &mut EmthinState, backend: &mut WinitGraphicsBacke
     }
 }
 
-fn build_layer_surface_elements(
-    renderer: &mut GlesRenderer,
-    output: &Output,
-    scale: f64,
-) -> Vec<CustomElement<GlesRenderer>> {
-    use smithay::desktop::layer_map_for_output;
-    use smithay::wayland::shell::wlr_layer::Layer;
-
-    // Collect surface + location while holding the LayerMap guard,
-    // then drop the guard before calling the renderer (avoids holding
-    // a MutexGuard across GL operations).
-    let surface_locs: Vec<_> = {
-        let map = layer_map_for_output(output);
-        [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background]
-            .iter()
-            .flat_map(|&layer| {
-                map.layers_on(layer)
-                    .rev()
-                    .map(|s| {
-                        let loc = map.layer_geometry(s).map(|g| g.loc).unwrap_or_default();
-                        (s.wl_surface().clone(), loc)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    };
-
-    let mut elements = Vec::new();
-    for (wl_surface, loc) in &surface_locs {
-        let layer_elements: Vec<CustomElement<GlesRenderer>> = render_elements_from_surface_tree(
-            renderer,
-            wl_surface,
-            loc.to_physical_precise_round(scale),
-            scale,
-            1.0,
-            Kind::Unspecified,
-        );
-        elements.extend(layer_elements);
-    }
-    elements
-}
-
 fn render_frame(
     state: &mut EmthinState,
     backend: &mut WinitGraphicsBackend<GlesRenderer>,
@@ -143,8 +99,6 @@ fn render_frame(
             return;
         };
 
-        // Non-effect elements: software cursor, layer shell surfaces, window
-        // mirrors. emthin assembles these itself.
         let scale = output.current_scale().fractional_scale();
         let mut extras: Vec<CustomElement<GlesRenderer>> = Vec::new();
 
@@ -194,13 +148,6 @@ fn render_frame(
             }
         }
 
-        // Layer surfaces + mirrors stacked below the chain output but above
-        // the space's client windows.
-        extras.extend(build_layer_surface_elements(renderer, output, scale));
-        extras.extend(crate::mirror_render::build_mirror_elements(
-            state, renderer, scale,
-        ));
-
         if let Err(e) = render_output::<GlesRenderer, CustomElement<GlesRenderer>, Window, _>(
             output,
             renderer,
@@ -231,21 +178,6 @@ fn post_render(state: &mut EmthinState, output: &Output) {
             |_, _| Some(output.clone()),
         )
     });
-
-    // Layer surfaces: send frame callbacks and clean up dead ones.
-    {
-        use smithay::desktop::layer_map_for_output;
-        let mut map = layer_map_for_output(output);
-        let layers: Vec<_> = map.layers().cloned().collect();
-        map.cleanup();
-        drop(map);
-        let elapsed = state.start_time.elapsed();
-        for layer in &layers {
-            layer.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
-            });
-        }
-    }
 
     state.workspace.active_space.refresh();
     state.wl.popups.cleanup();
@@ -329,18 +261,9 @@ pub fn init_winit(
                         Some(Scale::Fractional(scale_factor)),
                         None,
                     );
-                    // LayerMap caches `non_exclusive_zone` inside its `zone`
-                    // field — it only refreshes when `arrange()` runs. Without
-                    // this call, effects and Emacs would keep seeing the old
-                    // canvas after a winit resize.
-                    {
-                        let mut map = smithay::desktop::layer_map_for_output(&output);
-                        map.arrange();
-                    }
-
                     if state.emacs.size_settled() {
                         // Re-lays out every Emacs frame against the fresh
-                        // non_exclusive_zone and broadcasts SurfaceSize — also
+                        // output size and broadcasts SurfaceSize — also
                         // sets needs_redraw.
                         state.relayout_emacs();
                     } else {

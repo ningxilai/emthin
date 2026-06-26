@@ -45,3 +45,4 @@ delegate_seat!(EmthinState);
 
 impl smithay::wayland::tablet_manager::TabletSeatHandler for EmthinState {}
 smithay::delegate_cursor_shape!(EmthinState);
+smithay::delegate_relative_pointer!(EmthinState);

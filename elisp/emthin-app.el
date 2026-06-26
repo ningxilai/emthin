@@ -1,4 +1,4 @@
-;;; emthin-app.el --- Embedded app lifecycle, geometry, and mirrors  -*- lexical-binding: t; -*-
+;;; emthin-app.el --- Embedded app lifecycle and geometry  -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -25,15 +25,8 @@ disappears.")
 (defvar-local emthin--last-geometry nil
   "Last geometry sent for this buffer's embedded app window, to skip no-op updates.")
 
-(defvar emthin--mirror-table (make-hash-table :test 'eql)
-  "Tracks source and mirror windows per embedded app.
-Key: window-id.  Value: (SOURCE-WIN . ((VIEW-ID . EMACS-WIN) ...)).")
-
 (defvar emthin--last-focused-wid 'unset
   "Last window-id sent via set_focus IPC.  Used as change-detection guard.")
-
-(defvar emthin--next-view-id 0
-  "Counter for generating unique mirror view IDs.")
 
 ;; ---------------------------------------------------------------------------
 ;; Workspace tracking
@@ -86,7 +79,7 @@ back to the generic `display-buffer' path.")
 ;; ---------------------------------------------------------------------------
 
 (defsubst emthin--rect (x y w h)
-  "Create a rect from X Y W H."
+  "Create a rect from X Y W H.  Values are floats (0..1) relative to frame."
   (list x y w h))
 
 (defsubst emthin--rect-x (r) (nth 0 r))
@@ -94,13 +87,9 @@ back to the generic `display-buffer' path.")
 (defsubst emthin--rect-w (r) (nth 2 r))
 (defsubst emthin--rect-h (r) (nth 3 r))
 
-(defsubst emthin--mirror-source (table wid)
-  "Return source window for WID in mirror TABLE."
-  (car (gethash wid table)))
-
-(defsubst emthin--mirror-mirrors (table wid)
-  "Return mirror alist for WID in mirror TABLE."
-  (cdr (gethash wid table)))
+(defsubst emthin--px->frac (px dim)
+  "Convert pixel PX to a fraction of DIM (frame pixel width/height)."
+  (/ (float px) dim))
 
 ;; ---------------------------------------------------------------------------
 ;; IPC call helpers
@@ -147,8 +136,13 @@ Send a METHOD notification with alternating keyword-value PLIST."
      (emthin--on-title-changed (plist-get params :window_id)
                                 (or (plist-get params :title) "")))
     ('focus_view
-     (emthin--on-focus-view (plist-get params :window_id)
-                             (plist-get params :view_id)))
+     (emthin--on-focus-view (plist-get params :window_id)))
+    ('window_resized
+     (emthin--on-window-resized (plist-get params :window_id)
+                                (plist-get params :x)
+                                (plist-get params :y)
+                                (plist-get params :w)
+                                (plist-get params :h)))
     ('surface_size
      (let* ((w (plist-get params :width))
             (h (plist-get params :height))
@@ -220,7 +214,6 @@ Send a METHOD notification with alternating keyword-value PLIST."
           (when (window-deletable-p win)
             (delete-window win)))
         (kill-buffer buf)
-        (remhash window-id emthin--mirror-table)
         (let ((next-wid (buffer-local-value 'emthin--window-id
                                             (window-buffer (selected-window)))))
           (if next-wid
@@ -236,20 +229,20 @@ Send a METHOD notification with alternating keyword-value PLIST."
     (with-current-buffer buf
       (rename-buffer (format "*emthin: %s*" title) t))))
 
-(defun emthin--on-focus-view (window-id view-id)
-  "Select the Emacs window that corresponds to WINDOW-ID / VIEW-ID.
-VIEW-ID 0 means the source window; otherwise look up the mirror alist."
-  (let* ((state (gethash window-id emthin--mirror-table))
-         (target (when state
-                   (if (= view-id 0)
-                       (car state)
-                     (cdr (assq view-id (cdr state)))))))
-    (unless (and target (window-live-p target)
-                 (eq (window-frame target) (selected-frame)))
-      (when-let* ((buf (emthin--find-buffer window-id)))
-        (setq target (get-buffer-window buf nil))))
-    (when (and target (window-live-p target))
+(defun emthin--on-focus-view (window-id)
+  "Select the Emacs window that corresponds to WINDOW-ID."
+  (when-let* ((buf (emthin--find-buffer window-id))
+              (target (get-buffer-window buf nil)))
+    (when (window-live-p target)
       (select-window target))))
+
+(defun emthin--on-window-resized (window-id x y w h)
+  "Handle a compositor-initiated resize of an embedded app.
+Updates the buffer's `emthin--last-geometry' so Emacs doesn't
+re-send stale geometry on the next sync-frame."
+  (when-let* ((buf (emthin--find-buffer window-id)))
+    (with-current-buffer buf
+      (setq emthin--last-geometry (emthin--rect x y w h)))))
 
 (defun emthin--kill-buffer-hook ()
   "Notify emthin to close the app when its Emacs buffer is killed."
@@ -308,15 +301,22 @@ Computed once when the compositor reports the surface size."
                 (- (nth 3 edges) (nth 1 edges))))
 
 (defun emthin--window-geometry (window)
-  "Return rect for Emacs WINDOW body area in surface-local pixels.
-Pipeline: window-body-pixel-edges → edges->rect."
-  (thread-last
-    (window-body-pixel-edges window)
-    (emthin--edges->rect (emthin--frame-header-offset (window-frame window)))))
-
-(defun emthin--alloc-view-id ()
-  "Allocate a unique mirror view ID."
-  (cl-incf emthin--next-view-id))
+  "Return rect (fractions 0..1 of frame) for Emacs WINDOW body area.
+Fractions are stable across frame resizes; the compositor converts
+to pixels using the current usable-area size."
+  (let* ((edges (window-body-pixel-edges window))
+         (offset (emthin--frame-header-offset (window-frame window)))
+         (x (nth 0 edges))
+         (y (+ (nth 1 edges) offset))
+         (w (- (nth 2 edges) (nth 0 edges)))
+         (h (- (nth 3 edges) (nth 1 edges)))
+         (fw (float (frame-pixel-width (window-frame window))))
+         (fh (float (frame-pixel-height (window-frame window)))))
+    (emthin--rect
+     (emthin--px->frac x fw)
+     (emthin--px->frac y fh)
+     (emthin--px->frac w fw)
+     (emthin--px->frac h fh))))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-frame sync helpers — pure collection + diff, then apply
@@ -327,93 +327,9 @@ Pipeline: window-body-pixel-edges → edges->rect."
   (let ((wid-wins (make-hash-table :test 'eql)))
     (dolist (win (window-list frame 'no-minibuf))
       (when-let* ((wid (buffer-local-value 'emthin--window-id
-                                          (window-buffer win))))
+                                           (window-buffer win))))
         (puthash wid (cons win (gethash wid wid-wins)) wid-wins)))
     wid-wins))
-
-(defun emthin--mirror-diff (wins prev-source prev-mirrors next-view-id)
-  "Pure: compute mirror diff given WINS, PREV-SOURCE, PREV-MIRRORS, NEXT-VIEW-ID.
-
-Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
-  :source-win   — the window to use as source (or nil)
-  :promote-vid  — vid of a mirror to promote, or nil
-  :mirror-removals — vids of stale mirrors to remove
-  :mirror-additions — ((VID . WIN) ...) for new mirrors
-  :mirror-updates   — ((VID . WIN) ...) for existing mirrors
-  :new-mirrors      — (SOURCE-WIN . ((VID . WIN) ...)) for mirror-table"
-  (if (not wins)
-      (cons (list :source-win nil :promote-vid nil
-                  :mirror-removals (mapcar #'car prev-mirrors)
-                  :mirror-additions nil :mirror-updates nil
-                  :new-mirrors nil)
-            next-view-id)
-    (let* ((source-win (if (and prev-source (memq prev-source wins))
-                           prev-source
-                         (car wins)))
-           (mirror-wins (remq source-win wins))
-           (promote-vid (and prev-source (not (eq source-win prev-source))
-                             (car (rassq source-win prev-mirrors))))
-           (remaining (if promote-vid
-                          (cl-remove promote-vid prev-mirrors :key #'car)
-                        prev-mirrors))
-           (old-by-win (make-hash-table :test 'eq))
-           (new-mirrors nil) (removals nil)
-           (additions nil) (updates nil))
-      (dolist (m remaining)
-        (puthash (cdr m) (car m) old-by-win))
-      (dolist (mw mirror-wins)
-        (if-let* ((vid (gethash mw old-by-win)))
-            (progn
-              (push (cons vid mw) updates)
-              (push (cons vid mw) new-mirrors))
-          (push (cons next-view-id mw) additions)
-          (push (cons next-view-id mw) new-mirrors)
-          (setq next-view-id (1+ next-view-id)))
-        (remhash mw old-by-win))
-      (maphash (lambda (_win vid) (push vid removals)) old-by-win)
-      (when (and prev-source (not (eq source-win prev-source)) (not promote-vid))
-        (setq removals (append (mapcar #'car prev-mirrors) removals)))
-      (cons (list :source-win source-win
-                  :promote-vid promote-vid
-                  :mirror-removals removals
-                  :mirror-additions (nreverse additions)
-                  :mirror-updates (nreverse updates)
-                   :new-mirrors (cons source-win (nreverse new-mirrors)))
-            next-view-id))))
-
-(defun emthin--send-mirror-geometry* (wid view-id win msg-type)
-  "Send mirror geometry IPC (utility, callable from thunks)."
-  (let ((geo (emthin--window-geometry win))
-        (method (intern msg-type)))
-    (emthin--call* method
-      :window_id wid :view_id view-id
-      :x (emthin--rect-x geo) :y (emthin--rect-y geo)
-      :w (emthin--rect-w geo) :h (emthin--rect-h geo))))
-
-(defun emthin--sync-mirrors (wid diff)
-  "Apply mirror DIFF plist for WID synchronously."
-  (condition-case err
-      (let ((source-win (plist-get diff :source-win))
-            (promote-vid (plist-get diff :promote-vid))
-            (removals (plist-get diff :mirror-removals))
-            (additions (plist-get diff :mirror-additions))
-            (updates (plist-get diff :mirror-updates))
-            (new-mirrors (plist-get diff :new-mirrors)))
-        (dolist (vid removals)
-          (emthin--call* 'remove-mirror :window_id wid :view_id vid))
-        (when promote-vid
-          (emthin--call* 'promote-mirror :window_id wid :view_id promote-vid))
-        (dolist (pair additions)
-          (emthin--send-mirror-geometry* wid (car pair) (cdr pair) "add_mirror"))
-        (dolist (pair updates)
-          (emthin--send-mirror-geometry* wid (car pair) (cdr pair) "update_mirror_geometry"))
-        (when source-win
-          (emthin--report-geometry wid source-win))
-        (if source-win
-            (puthash wid new-mirrors emthin--mirror-table)
-          (remhash wid emthin--mirror-table)))
-    (error
-     (message "emthin: mirror sync error for window %s: %s" wid err))))
 
 (defun emthin--report-geometry (window-id window)
   "Send set_geometry for WINDOW-ID if geometry changed."
@@ -435,40 +351,31 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
      (message "emthin: geometry error for window %s: %s" window-id err))))
 
 ;; ---------------------------------------------------------------------------
-;; Per-frame sync (geometry + visibility + mirrors)
+;; Per-frame sync (geometry + visibility)
 ;; ---------------------------------------------------------------------------
 
 (defun emthin--sync-frame (frame)
-  "Sync visibility, geometry, and mirrors for embedded app buffers in FRAME."
+  "Sync visibility and geometry for embedded app buffers in FRAME."
   (when emthin--process
     (let ((ws-id (gethash frame emthin--frame-workspace-table)))
       (when (eql ws-id emthin--active-workspace-id)
-        (let ((wid-wins (emthin--wid-wins-data frame))
-              (next-view-id emthin--next-view-id))
-          (unwind-protect
-              (progn
-                ;; 1. Window decorations
-                (condition-case err
+        (unwind-protect
+            (progn
+              ;; 1. Window decorations
+              (condition-case err
+                  (let ((wid-wins (emthin--wid-wins-data frame)))
                     (maphash (lambda (_wid wins)
                                (dolist (win wins)
                                  (set-window-scroll-bars win 0 nil 0 nil)
                                  (set-window-fringes win 0 0)
                                  (set-window-margins win 0 0)))
                              wid-wins)
-                  (error
-                   (message "emthin: decoration error: %s" err)))
-                ;; 2. Per-buffer sync (visibility, geometry, mirrors)
-                (condition-case err
+                    ;; 2. Per-buffer sync (visibility, geometry)
                     (dolist (buf (buffer-list))
                       (when-let* ((wid (buffer-local-value 'emthin--window-id buf)))
                         (let* ((wins (gethash wid wid-wins))
                                (now-visible (and wins t))
-                               (was-visible (buffer-local-value 'emthin--visible buf))
-                               (prev-state (gethash wid emthin--mirror-table))
-                               (mirror-result (emthin--mirror-diff
-                                               wins (car prev-state) (cdr prev-state)
-                                               next-view-id)))
-                          (setq next-view-id (cdr mirror-result))
+                               (was-visible (buffer-local-value 'emthin--visible buf)))
                           ;; Visibility
                           (unless (eq now-visible was-visible)
                             (with-current-buffer buf
@@ -476,43 +383,13 @@ Returns (DIFF-PLIST . NEW-NEXT-VIEW-ID).  DIFF-PLIST has:
                             (emthin--call* 'set-visibility
                                            :window_id wid
                                            :visible (if now-visible t :json-false)))
-                          ;; Mirrors
-                          (emthin--sync-mirrors wid (car mirror-result)))))
-                  (error
-                   (message "emthin: per-buffer sync error: %s" err)))
-                )
-            (emthin--sync-focus frame)
-            (setq emthin--next-view-id next-view-id)))))))
-
-;; ---------------------------------------------------------------------------
-;; Mirror promotion (interactive)
-;; ---------------------------------------------------------------------------
-
-(defun emthin-promote-mirror ()
-  "Promote the mirror in the selected window to become the app source.
-The compositor will adopt the mirror's geometry as the app's new
-position; the old source window becomes a mirror in its place."
-  (interactive)
-  (let* ((buf (window-buffer))
-         (wid (buffer-local-value 'emthin--window-id buf))
-         (state (gethash wid emthin--mirror-table)))
-    (if (not (and wid state))
-        (message "emthin: no embedded app in current window")
-      (let ((mirrors (cdr state))
-            (source-win (car state)))
-        (if-let* ((vid (car (rassq (selected-window) mirrors))))
-            (progn
-              (emthin--call promote-mirror
-                :window_id wid
-                :view_id vid)
-              (let ((new-view-id (emthin--alloc-view-id)))
-                (puthash wid
-                         (cons (selected-window)
-                               (cons (cons new-view-id source-win)
-                                     (cl-remove vid mirrors :key #'car)))
-                         emthin--mirror-table))
-              (message "emthin: promoted mirror %d" vid))
-        (message "emthin: current window is not a mirror"))))))
+                          ;; Geometry (first window only)
+                          (when wins
+                            (emthin--report-geometry wid (car wins)))))))
+                (error
+                 (message "emthin: per-buffer sync error: %s" err)))
+              )
+          (emthin--sync-focus frame))))))
 
 (add-hook 'window-size-change-functions #'emthin--sync-frame)
 (add-hook 'window-buffer-change-functions #'emthin--sync-frame)

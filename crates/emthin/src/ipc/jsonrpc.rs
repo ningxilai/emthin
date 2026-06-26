@@ -44,17 +44,17 @@ mod tests {
 
     #[test]
     fn parse_set_geometry() {
-        let wire = br#"{"jsonrpc":"2.0","method":"set_geometry","params":{"window_id":42,"x":10,"y":20,"w":800,"h":600}}"#;
+        let wire = br#"{"jsonrpc":"2.0","method":"set_geometry","params":{"window_id":42,"x":0.5,"y":0.3,"w":0.4,"h":0.6}}"#;
         let msg = parse_incoming(wire).unwrap();
         assert!(matches!(
             msg,
             IncomingMessage::SetGeometry {
                 window_id: 42,
                 rect: IpcRect {
-                    x: 10,
-                    y: 20,
-                    w: 800,
-                    h: 600
+                    x: 0.5,
+                    y: 0.3,
+                    w: 0.4,
+                    h: 0.6
                 }
             }
         ));

@@ -217,6 +217,20 @@ fn parse_msg(bytes: &[u8]) -> Option<zbus::Message> {
 }
 
 // ---------------------------------------------------------------------------
+// Method return builder
+// ---------------------------------------------------------------------------
+
+fn build_method_return<T: serde::Serialize + zvariant::Type>(
+    request_bytes: &[u8],
+    body: &T,
+) -> Option<Vec<u8>> {
+    let request = parse_msg(request_bytes)?;
+    let hdr = request.header();
+    let reply = zbus::Message::method_return(&hdr).ok()?.build(body).ok()?;
+    Some(reply.data().to_vec())
+}
+
+// ---------------------------------------------------------------------------
 // IME signal builders (using zbus::Message::signal)
 // ---------------------------------------------------------------------------
 
@@ -378,17 +392,65 @@ impl ClientConn {
                     };
 
                     let hdr = msg.header();
-                    if let Some(fm) = classify(&bytes) {
-                        if let Some(dest) = hdr.destination() {
-                            let dest_str = dest.as_str();
-                            if dest_str.starts_with(':')
-                                && self.fcitx_server_name.as_deref() != Some(dest_str)
-                            {
-                                self.fcitx_server_name = Some(dest_str.to_string());
-                                *self.router.fcitx_server_name.lock().unwrap() =
-                                    self.fcitx_server_name.clone();
+                    let iface_str = hdr.interface().map(|i| i.as_str().to_string());
+                    let member_str = hdr.member().map(|m| m.as_str().to_string());
+                    let dest_str = hdr.destination().map(|d| d.as_str().to_string());
+
+                    // Track fcitx server name from destination unique name.
+                    if let Some(ref dest) = dest_str {
+                        if dest.starts_with(':')
+                            && self.fcitx_server_name.as_deref() != Some(dest.as_str())
+                        {
+                            self.fcitx_server_name = Some(dest.clone());
+                            *self.router.fcitx_server_name.lock().unwrap() =
+                                self.fcitx_server_name.clone();
+                        }
+                    }
+
+                    // Check for intercepted DBus method calls (RequestName, GetNameOwner).
+                    if iface_str.as_deref() == Some("org.freedesktop.DBus") {
+                        if let Some(method) = &member_str {
+                            if let Some(msg_ref) = parse_msg(&bytes) {
+                                let body = msg_ref.body();
+                                let body_data = body.data();
+                                match method.as_str() {
+                                    "RequestName" => {
+                                        if let Ok(((name, _flags), _)) = body_data
+                                            .deserialize_for_signature::<&str, (String, u32)>("su")
+                                        {
+                                            if fcitx::is_fcitx_well_known(&name) {
+                                                // Reply PRIMARY_OWNER (1) locally.
+                                                if let Some(reply) =
+                                                    build_method_return(&bytes, &[1u32])
+                                                {
+                                                    self.write_client(&reply)?;
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    "GetNameOwner" => {
+                                        if let Ok((name, _)) =
+                                            body_data.deserialize_for_signature::<&str, String>("s")
+                                        {
+                                            if fcitx::is_fcitx_well_known(&name) {
+                                                let unique = format!(":1.{}", self.client_fd);
+                                                if let Some(reply) =
+                                                    build_method_return(&bytes, &unique)
+                                                {
+                                                    self.write_client(&reply)?;
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
+                    }
+
+                    if let Some(fm) = classify(&bytes) {
                         let reply = build_reply(&bytes, &fm, &mut self.ic_alloc);
                         let Some(reply) = reply else {
                             self.write_upstream(&bytes)?;
@@ -412,6 +474,33 @@ impl ClientConn {
                                 .push_event(RouterNotification::FcitxEvent(event));
                         }
                         continue;
+                    }
+
+                    // Consult the routing table for non-fcitx messages.
+                    let route = self
+                        .router
+                        .routing_table
+                        .lock()
+                        .unwrap()
+                        .route_str(
+                            dest_str.as_deref(),
+                            iface_str.as_deref(),
+                            member_str.as_deref(),
+                        )
+                        .map(|s| s.to_string());
+                    match route.as_deref() {
+                        Some("deny") => {
+                            tracing::debug!(
+                                destination = ?dest_str,
+                                interface = ?iface_str,
+                                member = ?member_str,
+                                "routing: denied"
+                            );
+                            continue;
+                        }
+                        _ => {
+                            // "host" or None — forward to upstream (default).
+                        }
                     }
 
                     self.write_upstream(&bytes)?;

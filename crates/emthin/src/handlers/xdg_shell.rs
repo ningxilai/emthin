@@ -217,12 +217,65 @@ impl XdgShellHandler for EmthinState {
 
     fn resize_request(
         &mut self,
-        _surface: ToplevelSurface,
-        _seat: wl_seat::WlSeat,
-        _serial: Serial,
-        _edges: xdg_toplevel::ResizeEdge,
+        surface: ToplevelSurface,
+        seat: wl_seat::WlSeat,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
     ) {
-        // Emacs is always fullscreen in emthin — ignore resize requests
+        // Only embedded apps are resizable. Emacs is always fullscreen
+        // and dialogs have no embedded AppManager entry.
+        let Some(window_id) = self.apps.id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let Some(window) = self
+            .workspace
+            .active_space
+            .elements()
+            .find(|w| {
+                w.toplevel()
+                    .is_some_and(|t| t.wl_surface() == surface.wl_surface())
+            })
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(seat) = Seat::<EmthinState>::from_resource(&seat) else {
+            return;
+        };
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        if !pointer.has_grab(serial) {
+            return;
+        }
+        let Some(start_data) = pointer.grab_start_data() else {
+            return;
+        };
+        use smithay::reexports::wayland_server::Resource;
+        let same_client = start_data
+            .focus
+            .as_ref()
+            .is_some_and(|(s, _)| s.id().same_client_as(&surface.wl_surface().id()));
+        if !same_client {
+            return;
+        }
+        let Some(initial_location) = self.workspace.active_space.element_location(&window) else {
+            return;
+        };
+        let initial_size = window.bbox().size;
+
+        let grab = crate::grabs::ResizeGrab {
+            start_data,
+            window,
+            window_id,
+            initial_location,
+            initial_size,
+            current_location: initial_location,
+            current_size: initial_size,
+            edges,
+        };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
