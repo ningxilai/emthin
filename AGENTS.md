@@ -1,3 +1,46 @@
+# Design Philosophy
+
+**Elastic Emacs / Thin Kernel.** `emthin` inverts the typical compositor
+architecture: the Rust side should remain a *small, stable kernel* providing
+minimal Wayland/input/IPC primitives, while all layout policy, window
+management decisions, keybindings, and application lifecycle live in **Elisp**,
+where users can customize and extend without touching the compositor.
+
+```
+╔═══════════════════════════════════════════╗
+║          Elisp (thick, flexible)          ║
+║  layout  ·  placement  ·  keybinds       ║
+║  app lifecycle  ·  frame tree            ║
+║  window rules  ·  hooks                  ║
+╚═══════════════════════════════════════════╝
+                    │ IPC (f64 fractions, JSON-RPC)
+                    ▼
+╔═══════════════════════════════════════════╗
+║        Rust kernel (small, stable)        ║
+║  wayland protocol  ·  input dispatch     ║
+║  pixel→fraction conversion  ·  ResizeGrab║
+║  DBus broker  ·  clipboard bridge        ║
+╚═══════════════════════════════════════════╝
+```
+
+This is a deliberate departure from conventional compositors (i3, river,
+niri) where the C/Rust binary encodes all layout policy. Here, the compositor
+speaks only in **f64 fractions** (0..=1 relative to the Emacs frame) —
+geometry is *described*, not dictated. The Elisp side converts user intent
+into fractions, and the kernel converts fractions into pixels.
+
+**Consequences:**
+- **`emthin-ipc.el` and `emthin-launch.el` are frozen** — no modifications.
+  IPC transport (jsonrpc-process-connection) and process management are
+  stable; all new features go into `emthin-app.el` or new Elisp libraries.
+- **New IPC messages require Rust + Elisp changes** but should be rare — most
+  features should be implementable with existing primitives (`set_geometry`,
+  `close`, `set_visibility`, `set_focus`, `set_focus_view`, `switch_workspace`).
+- **Layout is Elisp code**, not kernel state. The kernel does not track
+  tiling, stacking, or placement policies.
+
+---
+
 # emthin workspace
 
 Cargo workspace, three crates:

@@ -206,10 +206,11 @@ on-axis neighbors."
           (count 0))
       (dolist (win (window-list frame 'no-minibuf))
         (when-let* ((buf (window-buffer win))
-                    (wid (buffer-local-value 'emthin--window-id buf)))
+                    (wid (buffer-local-value 'emthin--window-id buf))
+                    (app (emthin--find-app wid)))
           (with-current-buffer buf
             (setq emthin--last-geometry nil))
-          (emthin--apply-geometry wid win)
+          (emthin--apply-geometry app win)
           (cl-incf count)))
       (message "Manage: re-synced %d app(s)" count))))
 
