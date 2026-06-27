@@ -29,6 +29,28 @@ pub enum IncomingMessage {
     /// `prefix_active` so host IME can resume — focus is left
     /// wherever Emacs's prefix command put it.
     PrefixClear,
+    /// Create a mirror view (scaled copy) of the embedded app's surface.
+    AddMirror {
+        window_id: u64,
+        view_id: u64,
+        rect: IpcRect,
+    },
+    /// Update the geometry (position/size) of an existing mirror.
+    UpdateMirrorGeometry {
+        window_id: u64,
+        view_id: u64,
+        rect: IpcRect,
+    },
+    /// Remove a mirror view.
+    RemoveMirror {
+        window_id: u64,
+        view_id: u64,
+    },
+    /// Source was deleted; promote this mirror to become the new source.
+    PromoteMirror {
+        window_id: u64,
+        view_id: u64,
+    },
     /// Tell the compositor which surface should have keyboard focus.
     /// `window_id: None` means focus Emacs; `Some(id)` means focus that app.
     SetFocus {
@@ -73,8 +95,10 @@ pub enum OutgoingMessage {
         height: i32,
     },
     /// User clicked on an embedded app — Emacs should select the corresponding window.
+    /// view_id=0 means the source window; otherwise it's a mirror view_id.
     FocusView {
         window_id: u64,
+        view_id: u64,
     },
     /// XWayland is ready — Emacs can set DISPLAY=:<display> for X11 apps.
     XWaylandReady {
@@ -137,6 +161,34 @@ impl IncomingMessage {
             },
             "prefix_done" => Self::PrefixDone,
             "prefix_clear" => Self::PrefixClear,
+            "add_mirror" => Self::AddMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+                rect: IpcRect {
+                    x: params_get_f64(params, "x")?,
+                    y: params_get_f64(params, "y")?,
+                    w: params_get_f64(params, "w")?,
+                    h: params_get_f64(params, "h")?,
+                },
+            },
+            "update_mirror_geometry" => Self::UpdateMirrorGeometry {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+                rect: IpcRect {
+                    x: params_get_f64(params, "x")?,
+                    y: params_get_f64(params, "y")?,
+                    w: params_get_f64(params, "w")?,
+                    h: params_get_f64(params, "h")?,
+                },
+            },
+            "remove_mirror" => Self::RemoveMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+            },
+            "promote_mirror" => Self::PromoteMirror {
+                window_id: params_get_u64(params, "window_id")?,
+                view_id: params_get_u64(params, "view_id")?,
+            },
             "set_focus" => Self::SetFocus {
                 window_id: params.get("window_id").and_then(|v| v.as_u64()),
             },
@@ -218,8 +270,8 @@ impl OutgoingMessage {
             Self::SurfaceSize { width, height } => {
                 serde_json::json!({"width": width, "height": height})
             }
-            Self::FocusView { window_id } => {
-                serde_json::json!({"window_id": window_id})
+            Self::FocusView { window_id, view_id } => {
+                serde_json::json!({"window_id": window_id, "view_id": view_id})
             }
             Self::XWaylandReady { display } => serde_json::json!({"display": display}),
             Self::WorkspaceCreated { workspace_id } => {
@@ -301,6 +353,60 @@ mod tests {
     fn parses_prefix_done() {
         let msg = IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
         assert!(matches!(msg, IncomingMessage::PrefixDone));
+    }
+
+    #[test]
+    fn parses_add_mirror() {
+        let params = serde_json::json!({"window_id":1,"view_id":2,"x":0.0,"y":0.0,"w":0.5,"h":0.3});
+        let msg = IncomingMessage::from_jsonrpc("add_mirror", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::AddMirror {
+                window_id: 1,
+                view_id: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_update_mirror_geometry() {
+        let params = serde_json::json!({"window_id":3,"view_id":4,"x":0.1,"y":0.2,"w":0.4,"h":0.6});
+        let msg = IncomingMessage::from_jsonrpc("update_mirror_geometry", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::UpdateMirrorGeometry {
+                window_id: 3,
+                view_id: 4,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_remove_mirror() {
+        let params = serde_json::json!({"window_id":5,"view_id":6});
+        let msg = IncomingMessage::from_jsonrpc("remove_mirror", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::RemoveMirror {
+                window_id: 5,
+                view_id: 6
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_promote_mirror() {
+        let params = serde_json::json!({"window_id":7,"view_id":8});
+        let msg = IncomingMessage::from_jsonrpc("promote_mirror", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::PromoteMirror {
+                window_id: 7,
+                view_id: 8
+            }
+        ));
     }
 
     #[test]

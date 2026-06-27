@@ -6,9 +6,18 @@ use std::{
 use smithay::{
     desktop::{PopupManager, Window},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Logical, Point, Rectangle},
+    utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::seat::WaylandFocus,
 };
+
+/// A mirror view of an embedded app, possibly in a different workspace than
+/// its source. The source texture is accessed via WlSurface directly (not
+/// through Space), so cross-workspace mirrors work naturally.
+pub struct MirrorView {
+    pub geometry: Rectangle<i32, Logical>,
+    /// Which workspace this mirror is displayed in.
+    pub workspace_id: u64,
+}
 
 /// An embedded application window.
 pub struct AppWindow {
@@ -23,6 +32,10 @@ pub struct AppWindow {
     /// When `pending_geometry` was set (for timeout-based force-commit).
     pub pending_since: Option<Instant>,
     pub visible: bool,
+    /// Mirror views: view_id → MirrorView. Each entry is a scaled copy of the
+    /// source surface, positioned at the given rectangle. Mirrors can be in a
+    /// different workspace than the source.
+    pub mirrors: HashMap<u64, MirrorView>,
 }
 
 /// A renderable surface layer — toplevel or popup.
@@ -147,6 +160,57 @@ impl AppManager {
         result
     }
 
+    /// Test if `pos` hits a mirror region and map to source surface coordinates.
+    /// Returns mapped point if hit, None otherwise.
+    pub fn mirror_hit_test(
+        pos: Point<f64, Logical>,
+        source_geo: Rectangle<i32, Logical>,
+        mirror_geo: Rectangle<i32, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        let src_size = source_geo.size.to_f64();
+        let m = mirror_geo.to_f64();
+        let ratio = Self::aspect_fit_ratio(src_size, m.size)?;
+        let fit: Size<f64, Logical> = (src_size.w * ratio, src_size.h * ratio).into();
+        let rel = pos - m.loc;
+        if rel.x < 0.0 || rel.y < 0.0 || rel.x >= fit.w || rel.y >= fit.h {
+            return None;
+        }
+        Some(source_geo.loc.to_f64() + rel.downscale(ratio))
+    }
+
+    /// Compute the aspect-fit scale ratio for rendering `src_size` inside `dst_size`.
+    /// Returns `None` if either dimension is zero.
+    pub fn aspect_fit_ratio(src: Size<f64, Logical>, dst: Size<f64, Logical>) -> Option<f64> {
+        if src.w <= 0.0 || src.h <= 0.0 || dst.w <= 0.0 || dst.h <= 0.0 {
+            return None;
+        }
+        Some((dst.w / src.w).min(dst.h / src.h))
+    }
+
+    /// Check if `pos` falls inside any mirror in the given workspace.
+    /// Returns (window_id, view_id, mapped surface coordinate) with proportional mapping.
+    /// Only checks mirrors whose `workspace_id` matches `active_workspace_id`.
+    pub fn mirror_under(
+        &self,
+        pos: Point<f64, Logical>,
+        active_workspace_id: u64,
+    ) -> Option<(u64, u64, Point<f64, Logical>)> {
+        for app in self.windows.values() {
+            let Some(source_geo) = app.geometry else {
+                continue;
+            };
+            for (&view_id, mirror) in &app.mirrors {
+                if mirror.workspace_id != active_workspace_id {
+                    continue;
+                }
+                if let Some(mapped) = Self::mirror_hit_test(pos, source_geo, mirror.geometry) {
+                    return Some((app.window_id, view_id, mapped));
+                }
+            }
+        }
+        None
+    }
+
     /// Remove and return all windows whose Wayland surface has been destroyed.
     pub fn drain_dead(&mut self) -> Vec<AppWindow> {
         let dead_ids: Vec<u64> = self
@@ -165,6 +229,7 @@ impl AppManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::utils::{Point, Rectangle, Size};
 
     #[test]
     fn alloc_id_returns_sequential_ids() {
@@ -174,5 +239,118 @@ mod tests {
         let id3 = mgr.alloc_id();
         assert_eq!(id2, id1 + 1);
         assert_eq!(id3, id2 + 1);
+    }
+
+    // --- aspect_fit_ratio ---
+
+    #[test]
+    fn aspect_fit_ratio_returns_none_for_zero_src_width() {
+        let src: Size<f64, Logical> = (0.0, 100.0).into();
+        let dst: Size<f64, Logical> = (200.0, 200.0).into();
+        assert!(AppManager::aspect_fit_ratio(src, dst).is_none());
+    }
+
+    #[test]
+    fn aspect_fit_ratio_returns_none_for_zero_src_height() {
+        let src: Size<f64, Logical> = (100.0, 0.0).into();
+        let dst: Size<f64, Logical> = (200.0, 200.0).into();
+        assert!(AppManager::aspect_fit_ratio(src, dst).is_none());
+    }
+
+    #[test]
+    fn aspect_fit_ratio_returns_none_for_zero_dst_width() {
+        let src: Size<f64, Logical> = (100.0, 100.0).into();
+        let dst: Size<f64, Logical> = (0.0, 200.0).into();
+        assert!(AppManager::aspect_fit_ratio(src, dst).is_none());
+    }
+
+    #[test]
+    fn aspect_fit_ratio_returns_none_for_zero_dst_height() {
+        let src: Size<f64, Logical> = (100.0, 100.0).into();
+        let dst: Size<f64, Logical> = (200.0, 0.0).into();
+        assert!(AppManager::aspect_fit_ratio(src, dst).is_none());
+    }
+
+    #[test]
+    fn aspect_fit_ratio_equal_sizes_returns_one() {
+        let size: Size<f64, Logical> = (100.0, 100.0).into();
+        let ratio = AppManager::aspect_fit_ratio(size, size).unwrap();
+        assert!((ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aspect_fit_ratio_landscape_src_in_square_dst() {
+        let src: Size<f64, Logical> = (200.0, 100.0).into();
+        let dst: Size<f64, Logical> = (100.0, 100.0).into();
+        let ratio = AppManager::aspect_fit_ratio(src, dst).unwrap();
+        assert!((ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aspect_fit_ratio_portrait_src_in_square_dst() {
+        let src: Size<f64, Logical> = (100.0, 200.0).into();
+        let dst: Size<f64, Logical> = (100.0, 100.0).into();
+        let ratio = AppManager::aspect_fit_ratio(src, dst).unwrap();
+        assert!((ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    // --- mirror_hit_test ---
+
+    fn src_geo(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn mirror_hit_test_center_of_equal_size_mirror() {
+        let source = src_geo(0, 0, 100, 100);
+        let mirror = src_geo(200, 200, 100, 100);
+        let pos: Point<f64, Logical> = (250.0, 250.0).into();
+        let mapped = AppManager::mirror_hit_test(pos, source, mirror).unwrap();
+        assert!((mapped.x - 50.0).abs() < 0.01);
+        assert!((mapped.y - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn mirror_hit_test_scaled_down_mirror() {
+        let source = src_geo(10, 20, 200, 100);
+        let mirror = src_geo(0, 0, 100, 50);
+        let pos: Point<f64, Logical> = (50.0, 25.0).into();
+        let mapped = AppManager::mirror_hit_test(pos, source, mirror).unwrap();
+        assert!((mapped.x - 110.0).abs() < 0.01);
+        assert!((mapped.y - 70.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn mirror_hit_test_miss_outside_left() {
+        let source = src_geo(0, 0, 100, 100);
+        let mirror = src_geo(100, 100, 100, 100);
+        let pos: Point<f64, Logical> = (99.0, 150.0).into();
+        assert!(AppManager::mirror_hit_test(pos, source, mirror).is_none());
+    }
+
+    #[test]
+    fn mirror_hit_test_miss_outside_bottom() {
+        let source = src_geo(0, 0, 100, 100);
+        let mirror = src_geo(100, 100, 100, 100);
+        let pos: Point<f64, Logical> = (150.0, 200.0).into();
+        assert!(AppManager::mirror_hit_test(pos, source, mirror).is_none());
+    }
+
+    #[test]
+    fn mirror_hit_test_hit_at_origin() {
+        let source = src_geo(0, 0, 100, 100);
+        let mirror = src_geo(50, 50, 100, 100);
+        let pos: Point<f64, Logical> = (50.0, 50.0).into();
+        let mapped = AppManager::mirror_hit_test(pos, source, mirror).unwrap();
+        assert!((mapped.x - 0.0).abs() < 0.01);
+        assert!((mapped.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn mirror_hit_test_zero_size_source_returns_none() {
+        let source = src_geo(0, 0, 0, 100);
+        let mirror = src_geo(0, 0, 100, 100);
+        let pos: Point<f64, Logical> = (50.0, 50.0).into();
+        assert!(AppManager::mirror_hit_test(pos, source, mirror).is_none());
     }
 }

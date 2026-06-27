@@ -21,7 +21,7 @@
   "Hook run on window title change. Args: (window-id title)")
 
 (defvar emthin--focus-view-hook nil
-  "Hook run on compositor request to select window. Args: (window-id)")
+  "Hook run on compositor request to select window. Args: (window-id view-id)")
 
 (defvar emthin--window-resized-hook nil
   "Hook run on compositor-initiated resize. Args: (window-id x y w h)")
@@ -65,7 +65,8 @@
        (or (plist-get params :title) "")))
     ('focus_view
      (run-hook-with-args 'emthin--focus-view-hook
-       (plist-get params :window_id)))
+       (plist-get params :window_id)
+       (plist-get params :view_id)))
     ('window_resized
      (run-hook-with-args 'emthin--window-resized-hook
        (plist-get params :window_id)

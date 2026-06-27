@@ -148,6 +148,10 @@ fn render_frame(
             }
         }
 
+        extras.extend(crate::mirror_render::build_mirror_elements(
+            state, renderer, scale,
+        ));
+
         if let Err(e) = render_output::<GlesRenderer, CustomElement<GlesRenderer>, Window, _>(
             output,
             renderer,

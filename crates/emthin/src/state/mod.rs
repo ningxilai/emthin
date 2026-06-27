@@ -488,7 +488,10 @@ impl EmthinState {
     /// Mirrors sway's `view_map()` → `input_manager_set_focus()`
     /// pipeline. Single entry point for xdg_shell `new_toplevel`.
     pub fn auto_focus_new_window(&mut self, window: Window, window_id: u64) {
-        let focus_view = crate::ipc::OutgoingMessage::FocusView { window_id };
+        let focus_view = crate::ipc::OutgoingMessage::FocusView {
+            window_id,
+            view_id: 0,
+        };
 
         // Prefix sequence active: the user is typing C-x ... , any focus
         // steal would break the sequence. Still inform Emacs so its

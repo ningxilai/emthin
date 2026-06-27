@@ -8,10 +8,10 @@
 (require 'emthin-layout)
 (require 'emthin-dispatch)
 (require 'emthin-app)
+(require 'emthin-mirrors)
 (require 'emthin-sync)
 (require 'emthin-workspace)
 (require 'emthin-launch)
-(require 'emthin-manage)
 
 (provide 'emthin)
 ;;; emthin.el ends here

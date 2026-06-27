@@ -242,14 +242,23 @@ impl EmthinState {
                     );
                     let under_surface = under.map(|(s, _)| s);
 
-                    // Left-click on an embedded app → tell Emacs to select that window.
+                    // Left-click: check mirrors first, then embedded app surfaces.
                     if event.button() == Some(MouseButton::Left) {
-                        if let Some(window_id) = under_surface
+                        if let Some((window_id, view_id, _)) =
+                            self.apps.mirror_under(pos, self.workspace.active_id)
+                        {
+                            self.ipc.send(crate::ipc::OutgoingMessage::FocusView {
+                                window_id,
+                                view_id,
+                            });
+                        } else if let Some(window_id) = under_surface
                             .as_ref()
                             .and_then(|s| self.apps.id_for_surface(s))
                         {
-                            self.ipc
-                                .send(crate::ipc::OutgoingMessage::FocusView { window_id });
+                            self.ipc.send(crate::ipc::OutgoingMessage::FocusView {
+                                window_id,
+                                view_id: 0,
+                            });
                         }
                     }
 

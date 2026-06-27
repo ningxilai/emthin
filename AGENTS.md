@@ -222,6 +222,7 @@ Test files:
 - `other-frame` (C-x 5 o): advised `:around` to send `switch_workspace` IPC before calling original.
 - New Emacs frame fullscreen: must send configure with `Fullscreen` state + output size in `new_toplevel`.
 - `set-window-scroll-bars`/`set-window-fringes`/`set-window-margins` unconditionally reset to 0 in `sync-frame` for embedded app windows.
+- Emacs 31+ `(defvar x)` without initvalue does NOT create a global binding (Emacs 32 `eval.c:1000-1005`: "Simple (defvar <var>) should not count as a definition at all.") — always write `(defvar x nil)` to avoid `Qunbound` from `buffer-local-value`.
 - Elisp error isolation: every boundary point (IPC dispatch, frame/buffer/window hooks, post-command, kill-buffer, timers) wrapped in `condition-case` with error logging. `emthin--sync-frame` also uses `unwind-protect` to ensure `emthin--next-view-id` always saves.
 - Elisp code style: direct imperative with cl-lib (no deferred thunks). All `*-thunks` factories removed in favor of straight-line blocks.
 - Clipboard startup guard: use `!self.ipc.is_connected()` instead of per-target bool flags.

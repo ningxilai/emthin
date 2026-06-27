@@ -19,6 +19,26 @@ pub fn handle_ipc_message(state: &mut EmthinState, msg: IncomingMessage) {
             // IME-only cleanup, no focus restoration.
             state.ime.set_prefix_active(false);
         }
+        IncomingMessage::AddMirror {
+            window_id,
+            view_id,
+            rect,
+        } => {
+            ipc_add_mirror(state, window_id, view_id, rect);
+        }
+        IncomingMessage::UpdateMirrorGeometry {
+            window_id,
+            view_id,
+            rect,
+        } => {
+            ipc_update_mirror_geometry(state, window_id, view_id, rect);
+        }
+        IncomingMessage::RemoveMirror { window_id, view_id } => {
+            ipc_remove_mirror(state, window_id, view_id);
+        }
+        IncomingMessage::PromoteMirror { window_id, view_id } => {
+            ipc_promote_mirror(state, window_id, view_id);
+        }
         IncomingMessage::SetFocus { window_id } => {
             ipc_set_focus(state, window_id);
         }
@@ -158,6 +178,96 @@ fn ipc_prefix_done(state: &mut EmthinState) {
     tracing::debug!("IPC prefix_done: restoring focus");
     let serial = smithay::utils::SERIAL_COUNTER.next_serial();
     keyboard.set_focus(state, saved, serial);
+}
+
+fn ipc_add_mirror(
+    state: &mut EmthinState,
+    window_id: u64,
+    view_id: u64,
+    rect: crate::ipc::IpcRect,
+) {
+    let ws_id = state.workspace.active_id;
+    tracing::debug!(
+        "IPC add_mirror window={window_id} view={view_id} rect=({:.3},{:.3} {:.3}x{:.3}) ws={ws_id}",
+        rect.x, rect.y, rect.w, rect.h,
+    );
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        tracing::warn!("IPC add_mirror: invalid size, ignoring");
+        return;
+    }
+    let geo = state.fraction_to_canvas(rect);
+    let Some(app) = state.apps.get_mut(window_id) else {
+        tracing::warn!("add_mirror: unknown window_id={window_id}");
+        return;
+    };
+    app.mirrors.insert(
+        view_id,
+        crate::apps::MirrorView {
+            geometry: geo,
+            workspace_id: ws_id,
+        },
+    );
+}
+
+fn ipc_update_mirror_geometry(
+    state: &mut EmthinState,
+    window_id: u64,
+    view_id: u64,
+    rect: crate::ipc::IpcRect,
+) {
+    tracing::debug!(
+        "IPC update_mirror_geometry window={window_id} view={view_id} rect=({:.3},{:.3} {:.3}x{:.3})",
+        rect.x, rect.y, rect.w, rect.h,
+    );
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        tracing::warn!("IPC update_mirror_geometry: invalid size, ignoring");
+        return;
+    }
+    let geo = state.fraction_to_canvas(rect);
+    let Some(app) = state.apps.get_mut(window_id) else {
+        return;
+    };
+    if let Some(mirror) = app.mirrors.get_mut(&view_id) {
+        mirror.geometry = geo;
+    }
+}
+
+fn ipc_remove_mirror(state: &mut EmthinState, window_id: u64, view_id: u64) {
+    tracing::debug!("IPC remove_mirror window={window_id} view={view_id}");
+    if let Some(app) = state.apps.get_mut(window_id) {
+        app.mirrors.remove(&view_id);
+    }
+}
+
+fn ipc_promote_mirror(state: &mut EmthinState, window_id: u64, view_id: u64) {
+    tracing::debug!("IPC promote_mirror window={window_id} view={view_id}");
+    let Some(app) = state.apps.get_mut(window_id) else {
+        return;
+    };
+    if let Some(mirror) = app.mirrors.remove(&view_id) {
+        let old_ws = app.workspace_id;
+        let new_ws = mirror.workspace_id;
+        app.geometry = Some(mirror.geometry);
+        let window = app.window.clone();
+
+        if old_ws != new_ws {
+            app.workspace_id = new_ws;
+            if let Some(space) = state.workspace.space_for_mut(old_ws) {
+                space.unmap_elem(&window);
+            }
+            let app_geo = state.apps.get(window_id).and_then(|a| a.geometry);
+            if let Some(geo) = app_geo {
+                if let Some(space) = state.workspace.space_for_mut(new_ws) {
+                    space.map_element(window, geo.loc, false);
+                }
+            }
+        } else {
+            state
+                .workspace
+                .active_space
+                .map_element(window, mirror.geometry.loc, false);
+        }
+    }
 }
 
 fn ipc_set_focus(state: &mut EmthinState, window_id: Option<u64>) {

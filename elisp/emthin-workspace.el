@@ -1,21 +1,16 @@
 ;;; emthin-workspace.el --- Workspace management for emthin  -*- lexical-binding: t; -*-
 
+(require 'emthin-app)
 (require 'emthin-sync)
+(require 'emthin-mirrors)
 (require 'emthin-ipc)
 
 ;; ── Workspace-local state ──
 ;; emthin--frame-workspace-table, emthin--ws-to-frame-table, and
-;; emthin--active-workspace-id are defined in emthin-app.el (so
-;; emthin-sync.el can read them without circular dependency).
+;; emthin--active-workspace-id are defined in emthin-app.el.
 
 (defvar emthin--pending-frame-queue nil
   "Frames awaiting workspace_created IPC confirmation (FIFO).")
-
-(defvar emthin--workspace-switch-suppressed nil
-  "When non-nil, suppress workspace switch from after-focus-change.")
-
-(defvar emthin--workspace-switch-timer nil
-  "Single timer handle for workspace switch debounce.")
 
 ;; ── Frame ↔ workspace mapping ──
 
@@ -47,24 +42,12 @@
           (emthin--sync-frame frame)))
     (emthin--map-frame-to-workspace (selected-frame) workspace-id)))
 
-(defun emthin--suppress-workspace-switch (&optional seconds)
-  "Suppress after-focus-change for SECONDS (default 0.3)."
-  (let ((delay (or seconds 0.3)))
-    (setq emthin--workspace-switch-suppressed t)
-    (when (timerp emthin--workspace-switch-timer)
-      (cancel-timer emthin--workspace-switch-timer))
-    (setq emthin--workspace-switch-timer
-          (run-with-timer delay nil
-            (lambda ()
-              (setq emthin--workspace-switch-suppressed nil
-                    emthin--workspace-switch-timer nil))))))
-
 (defun emthin--on-workspace-switched (workspace-id)
   "Update active workspace tracking and re-sync."
   (setq emthin--active-workspace-id workspace-id)
   (setq emthin--last-focused-wid 'unset)
+  (setq emthin--last-command-frame (selected-frame))
   (emthin--resync-workspace)
-  (emthin--suppress-workspace-switch 0.3)
   (emthin--sync-focus (selected-window)))
 
 (defun emthin--on-workspace-destroyed (workspace-id)
@@ -81,11 +64,12 @@
   (when-let* ((fr (emthin--active-frame)))
     (condition-case err
         (progn
+          (emthin--mirror-cleanup fr)
           (walk-windows (lambda (win)
-                          (let ((buf (window-buffer win)))
-                            (when (buffer-local-value 'emthin--window-id buf)
-                              (with-current-buffer buf
-                                (setq-local emthin--last-geometry nil)))))
+                          (let* ((buf (window-buffer win))
+                                 (wid (buffer-local-value 'emthin--window-id buf)))
+                            (when-let* ((app (emthin--find-app wid)))
+                              (oset app last-geometry nil))))
                         nil fr)
           (emthin--sync-frame fr))
       (error
@@ -111,43 +95,31 @@
     (error
      (message "emthin: delete-frame error: %s" err))))
 
-;; ── Focus-change driven workspace switch ──
+;; ── Frame switch detection via post-command-hook ──
 
-(defun emthin--after-focus-change ()
-  "Detect frame switch and request compositor workspace switch."
-  (when (and emthin--process
-             (not emthin--workspace-switch-suppressed))
-    (condition-case err
-        (let* ((frame (selected-frame))
-               (ws-id (gethash frame emthin--frame-workspace-table)))
-          (when (and ws-id
-                     (not (eql ws-id emthin--active-workspace-id)))
-            (emthin--suppress-workspace-switch 0.2)
-            (emthin--send 'switch-workspace `(:workspace_id ,ws-id))))
-      (error
-       (message "emthin: after-focus-change error: %s" err)))))
+(defvar emthin--last-command-frame nil
+  "Frame at the end of the last command.  Used for change detection.")
 
-;; ── other-frame advice ──
-
-(defun emthin--advise-other-frame (orig-fn &optional arg &rest args)
-  "Switch compositor workspace around `other-frame'."
+(defun emthin--detect-frame-switch ()
+  "Detect frame change and notify compositor.
+Runs on `post-command-hook', avoids any advice or focus-change hook."
   (when emthin--process
-    (setq emthin--workspace-switch-suppressed t))
-  (unwind-protect
-      (apply orig-fn arg args)
-    (when emthin--process
-      (let* ((frame (selected-frame))
-             (ws-id (gethash frame emthin--frame-workspace-table)))
-        (emthin--suppress-workspace-switch 0.2)
-        (when (and ws-id
-                   (not (eql ws-id emthin--active-workspace-id)))
-          (emthin--send 'switch-workspace `(:workspace_id ,ws-id)))))))
+    (condition-case err
+        (let ((frame (selected-frame)))
+          (when (and emthin--last-command-frame
+                     (not (eq frame emthin--last-command-frame)))
+            (when-let* ((ws-id (gethash frame emthin--frame-workspace-table)))
+              (unless (eql ws-id emthin--active-workspace-id)
+                (emthin--send 'switch-workspace `(:workspace_id ,ws-id)))))
+          (setq emthin--last-command-frame frame))
+      (error
+       (message "emthin: frame-switch error: %s" err)))))
 
-;; ── Register hooks and advice ──
+(add-hook 'post-command-hook #'emthin--detect-frame-switch)
 
-(advice-add 'other-frame :around #'emthin--advise-other-frame)
+;; ── Register hooks ──
+
 (add-hook 'after-make-frame-functions #'emthin--after-make-frame)
-(add-function :after after-focus-change-function #'emthin--after-focus-change)
 (add-hook 'delete-frame-functions #'emthin--delete-frame-hook)
 
 (add-hook 'emthin--workspace-created-hook  #'emthin--on-workspace-created)

@@ -18,8 +18,8 @@
                   :documentation "Last emthin--rect sent to compositor.")
    (saved-geometry :initform nil
                     :documentation "Geometry saved before fullscreen (manage.el).")
-   (layout :initform (make-instance 'emthin-layout-fill)
-           :type emthin-layout
+   (layout :initarg :layout
+           :type (or null emthin-layout)
            :documentation "Layout policy object for this app."))
   :documentation "An embedded application managed by emthin.")
 
@@ -27,6 +27,10 @@
 
 (defvar emthin--header-offset nil
   "Pixel height of GTK menu-bar + tool-bar. Seeded once on first surface_size.")
+
+(defvar emthin--frame-layout nil
+  "Frame-level layout strategy.  nil = fill behavior (wid-wins).
+Set to an emthin-layout instance to change sync behavior.")
 
 (defvar emthin--app-table (make-hash-table :test 'eql)
   "window-id → emthin--app instance")
@@ -44,6 +48,11 @@
 
 (defvar emthin--active-workspace-id nil
   "Currently active workspace ID in the compositor.")
+
+;; ── Buffer-local variables (defvar for Emacs 30 void-variable safety) ──
+
+(defvar emthin--window-id nil)
+(defvar emthin--visible nil)
 
 ;; ── Registry ──
 
@@ -82,14 +91,15 @@
   "Create buffer and app object for new embedded window."
   (condition-case err
       (let* ((buf-name (format "*emthin: %s*"
-                               (if (string-empty-p title) "app" title)))
+                                (if (string-empty-p title) "app" title)))
              (buf (generate-new-buffer buf-name))
+             (layout (or emthin--frame-layout
+                         (make-instance 'emthin-layout-fill)))
              (app (make-instance 'emthin--app
-                    :window-id window-id :buffer buf)))
+                    :window-id window-id :buffer buf :layout layout)))
         (with-current-buffer buf
           (setq-local emthin--window-id window-id)
           (setq-local emthin--visible nil)
-          (setq-local emthin--last-geometry nil)
           (setq-local mode-name "emthin")
           (setq-local buffer-read-only t)
           (setq-local left-fringe-width 0)
@@ -97,16 +107,14 @@
           (setq-local left-margin-width 0)
           (setq-local right-margin-width 0)
           (setq-local cursor-type nil)
-          (add-hook 'kill-buffer-hook #'emthin--kill-buffer-hook nil t)
-          (add-hook 'post-command-hook #'emthin--post-command-prefix-done nil t))
-        (emthin--register-app app)
-        (let ((target (emthin--take-app-target-window)))
-          (if target
-              (set-window-buffer target buf)
-            (display-buffer buf '((display-buffer-pop-up-window
-                                   display-buffer-use-some-window)
-                                  (inhibit-same-window . t)
-                                  (reusable-frames . nil)))))
+           (add-hook 'kill-buffer-hook #'emthin--kill-buffer-hook nil t))
+         (emthin--register-app app)
+        (if-let* ((target (emthin--take-app-target-window)))
+            (set-window-buffer target buf)
+          (display-buffer buf '((display-buffer-pop-up-window
+                                 display-buffer-use-some-window)
+                                (inhibit-same-window . t)
+                                (reusable-frames . nil))))
         (message "emthin: app ready (id=%s)" window-id))
     (error
      (message "emthin: window-created error (id=%s): %s" window-id err))))
@@ -132,22 +140,11 @@
     (with-current-buffer (oref app buffer)
       (rename-buffer (format "*emthin: %s*" title) t))))
 
-(defun emthin--on-focus-view (window-id)
-  "Select the Emacs window displaying WINDOW-ID."
-  (when-let* ((app (emthin--find-app window-id))
-              (buf (oref app buffer))
-              (target (get-buffer-window buf nil)))
-    (when (window-live-p target)
-      (select-window target))))
-
 (defun emthin--on-window-resized (window-id x y w h)
   "Update app's last-geometry from compositor-initiated resize."
   (when-let* ((app (emthin--find-app window-id)))
     (let ((geo (make-emthin--rect :x x :y y :w w :h h)))
-      (oset app last-geometry geo)
-      ;; Also set buffer-local for backward compat during transition.
-      (with-current-buffer (oref app buffer)
-        (setq-local emthin--last-geometry geo)))))
+      (oset app last-geometry geo))))
 
 (defun emthin--on-surface-size (width height)
   "Record header offset from first surface size event."
@@ -173,25 +170,20 @@
     (error
      (message "emthin: kill-buffer-hook error: %s" err))))
 
-;; ── Prefix hooks ──
+;; ── Post-command ──
 
-(defun emthin--post-command-prefix-done ()
-  "After a command in an app buffer, ask compositor to restore focus."
-  (condition-case err
-      (when emthin--process
-        (emthin--send 'prefix-done))
-    (error
-     (message "emthin: prefix-done error: %s" err))))
+(defun emthin--post-command ()
+  "After every command: clear prefix gate globally, restore focus in app buffers."
+  (when emthin--process
+    (condition-case err
+        (progn
+          (emthin--send 'prefix-clear nil)
+          (when (local-variable-p 'emthin--window-id (current-buffer))
+            (emthin--send 'prefix-done nil)))
+      (error
+       (message "emthin: post-command error: %s" err)))))
 
-(defun emthin--post-command-prefix-clear ()
-  "After every command in any buffer, clear prefix_active flag."
-  (condition-case err
-      (when emthin--process
-        (emthin--send 'prefix-clear))
-    (error
-     (message "emthin: prefix-clear error: %s" err))))
-
-(add-hook 'post-command-hook #'emthin--post-command-prefix-clear)
+(add-hook 'post-command-hook #'emthin--post-command)
 
 ;; ── Register on dispatch hooks ──
 
@@ -199,7 +191,6 @@
 (add-hook 'emthin--window-created-hook  #'emthin--on-window-created)
 (add-hook 'emthin--window-destroyed-hook #'emthin--on-window-destroyed)
 (add-hook 'emthin--title-changed-hook   #'emthin--on-title-changed)
-(add-hook 'emthin--focus-view-hook      #'emthin--on-focus-view)
 (add-hook 'emthin--window-resized-hook  #'emthin--on-window-resized)
 (add-hook 'emthin--surface-size-hook    #'emthin--on-surface-size)
 
