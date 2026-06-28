@@ -54,7 +54,7 @@ pub fn spawn(listen_path: PathBuf, upstream_path: PathBuf) -> (CmdSender, Notify
     std::thread::spawn(move || {
         let ctx = glib::MainContext::new();
         let _ = ctx.with_thread_default(|| {
-            let guid = "emthin-dbus-bridge";
+            let guid = "e1e5a7b3c4d8f9a0123456789abcdef0";
             let server = match DBusServer::new_sync(
                 &listen_addr,
                 DBusServerFlags::AUTHENTICATION_ALLOW_ANONYMOUS,
@@ -78,9 +78,9 @@ pub fn spawn(listen_path: PathBuf, upstream_path: PathBuf) -> (CmdSender, Notify
             let srv_upstream = upstream_path.clone();
 
             server.connect_new_connection(move |_srv, conn| {
-                let upstream = srv_upstream.to_string_lossy().to_string();
+                let upstream_addr = format!("unix:path={}", srv_upstream.to_string_lossy());
                 let upstream = match DBusConnection::for_address_sync(
-                    &upstream,
+                    &upstream_addr,
                     gio::DBusConnectionFlags::AUTHENTICATION_CLIENT,
                     None::<&gio::DBusAuthObserver>,
                     None::<&gio::Cancellable>,
@@ -112,7 +112,9 @@ pub fn spawn(listen_path: PathBuf, upstream_path: PathBuf) -> (CmdSender, Notify
                 let cl_conn = conn.clone();
                 upstream.add_filter(move |_up, msg, incoming| {
                     if incoming && msg.message_type() == DBusMessageType::Signal {
-                        let _ = cl_conn.send_message(msg, DBusSendMessageFlags::NONE);
+                        if let Ok(copy) = msg.copy() {
+                            let _ = cl_conn.send_message(&copy, DBusSendMessageFlags::NONE);
+                        }
                     }
                     Some(msg.clone())
                 });
@@ -205,10 +207,21 @@ fn handle_client_message(
                 return None;
             }
         }
+
+        if iface == "org.freedesktop.DBus" && route.is_none() {
+            return Some(msg.clone());
+        }
     }
 
+    let unlocked = match msg.copy() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to copy message for upstream");
+            return None;
+        }
+    };
     match upstream.send_message_with_reply_sync(
-        msg,
+        &unlocked,
         DBusSendMessageFlags::NONE,
         -1,
         None::<&gio::Cancellable>,
@@ -218,6 +231,11 @@ fn handle_client_message(
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream call failed");
+            let err = msg.new_method_error_literal(
+                "org.freedesktop.DBus.Error.Failed",
+                &format!("upstream call failed: {e}"),
+            );
+            let _ = _conn.send_message(&err, DBusSendMessageFlags::NONE);
         }
     }
     None
