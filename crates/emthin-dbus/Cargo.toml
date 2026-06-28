@@ -5,19 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "DBus session-bus protocol primitives (SASL + v1 parser + per-connection state machine + IME cursor-coord rewrite) for nested Wayland compositors"
+description = "DBus bridge primitives (fcitx5 intercept + gio-based proxy) for the emthin compositor"
 
 [dependencies]
 tracing.workspace = true
-zvariant = { version = "5", default-features = false }
 serde = { workspace = true }
-# Used by the router for SCM_RIGHTS fd passing and state/dbus for PR_SET_PDEATHSIG.
+gio = { version = "0.20", features = ["v2_80"] }
+glib = { version = "0.20" }
 libc = "0.2"
-tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
-serde_json = "1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-
-[dev-dependencies]
-tempfile = "3"
+unicode-segmentation = "1"

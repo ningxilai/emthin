@@ -299,29 +299,31 @@ pub fn init_winit(
                 WinitEvent::Ime(event) => {
                     tracing::debug!("winit Ime event: {event:?}");
 
-                    // Relay to the DBus fcitx5 active IC via router IPC so
-                    // embedded clients (WeChat / Electron via
-                    // GTK_IM_MODULE=fcitx) receive inline preedit + commit.
+                    // Relay to the DBus fcitx5 active IC so embedded clients
+                    // (WeChat / Electron via GTK_IM_MODULE=fcitx) receive
+                    // inline preedit + commit.
                     if let Some(ic_path) = state.ime.active_dbus_ic().map(|p| p.to_string()) {
                         match &event {
                             winit_crate::event::Ime::Commit(text) => {
-                                state.dbus.send_rpc(&emthin_dbus::RouterRequest::ImeCommit {
-                                    ic_path: ic_path.clone(),
-                                    text: text.clone(),
-                                });
+                                state.dbus.send_rpc(
+                                    emthin_dbus::router::BridgeCommand::ImeCommit {
+                                        ic_path: ic_path.clone(),
+                                        text: text.clone(),
+                                    },
+                                );
                             }
                             winit_crate::event::Ime::Preedit(text, cursor) => {
                                 let (cursor_begin, cursor_end) = cursor
                                     .map(|(b, e)| (b as i32, e as i32))
                                     .unwrap_or((-1, -1));
-                                state
-                                    .dbus
-                                    .send_rpc(&emthin_dbus::RouterRequest::ImePreedit {
+                                state.dbus.send_rpc(
+                                    emthin_dbus::router::BridgeCommand::ImePreedit {
                                         ic_path,
                                         text: text.clone(),
                                         cursor_begin,
                                         cursor_end,
-                                    });
+                                    },
+                                );
                             }
                             _ => {}
                         }

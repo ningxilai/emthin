@@ -1,5 +1,4 @@
 pub mod fcitx;
-pub mod proxy;
 pub mod router;
 
 pub use fcitx::{
@@ -7,4 +6,4 @@ pub use fcitx::{
     FcitxEvent, InputContextAllocator, INPUT_CONTEXT_INTERFACE, INPUT_CONTEXT_INTERFACE_FCITX4,
     INPUT_CONTEXT_PATH_PREFIX, INPUT_METHOD_INTERFACE,
 };
-pub use router::{RouteRule, RouterNotification, RouterRequest, RoutingTable};
+pub use router::{BridgeCommand, BridgeNotification, RouteRule, RoutingTable};

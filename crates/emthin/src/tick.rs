@@ -116,19 +116,19 @@ pub fn event_loop_tick(state: &mut EmthinState) {
 /// Forward non-fcitx router notifications (rule add/remove/list) to Emacs
 /// via IPC.
 fn forward_router_notifications(state: &mut EmthinState) {
-    let notifications = state.dbus.take_router_notifications();
+    let notifications = state.dbus.take_non_fcitx_notifications();
     for n in notifications {
         let msg = match n {
-            emthin_dbus::router::RouterNotification::FcitxEvent(_) => continue,
-            emthin_dbus::router::RouterNotification::RuleAdded { id, rule } => {
+            emthin_dbus::router::BridgeNotification::RuleAdded { id, rule } => {
                 crate::ipc::OutgoingMessage::DbusRouterRuleAdded { id, rule }
             }
-            emthin_dbus::router::RouterNotification::RuleRemoved { id } => {
+            emthin_dbus::router::BridgeNotification::RuleRemoved { id } => {
                 crate::ipc::OutgoingMessage::DbusRouterRuleRemoved { id }
             }
-            emthin_dbus::router::RouterNotification::RuleList { rules } => {
+            emthin_dbus::router::BridgeNotification::RuleList { rules } => {
                 crate::ipc::OutgoingMessage::DbusRouterRules { rules }
             }
+            _ => continue,
         };
         state.ipc.send(msg);
     }

@@ -52,17 +52,19 @@ pub fn handle_ipc_message(state: &mut EmthinState, msg: IncomingMessage) {
             tracing::debug!("IPC dbus_router_add_rule id={}", rule.id);
             state
                 .dbus
-                .send_rpc(&emthin_dbus::RouterRequest::AddRule { rule });
+                .send_rpc(emthin_dbus::router::BridgeCommand::AddRule(rule));
         }
         IncomingMessage::DbusRouterRemoveRule { id } => {
             tracing::debug!("IPC dbus_router_remove_rule id={id}");
             state
                 .dbus
-                .send_rpc(&emthin_dbus::RouterRequest::RemoveRule { id });
+                .send_rpc(emthin_dbus::router::BridgeCommand::RemoveRule(id));
         }
         IncomingMessage::DbusRouterListRules => {
             tracing::debug!("IPC dbus_router_list_rules");
-            state.dbus.send_rpc(&emthin_dbus::RouterRequest::ListRules);
+            state
+                .dbus
+                .send_rpc(emthin_dbus::router::BridgeCommand::ListRules);
         }
     }
 }

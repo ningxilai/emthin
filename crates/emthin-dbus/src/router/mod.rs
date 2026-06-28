@@ -1,7 +1,5 @@
-//! DBus router — message routing decision engine + subprocess types.
+pub mod bridge;
+pub mod rule;
 
-mod ipc;
-mod rule;
-
-pub use ipc::*;
+pub use bridge::*;
 pub use rule::*;

@@ -1,120 +1,31 @@
-//! DBus bridge — manages the `emthin-dbus-router` subprocess and relays
-//! IPC messages (routing rules, fcitx events) between the main process
-//! and the router.
-//!
-//! Every field is optional: if the router binary is missing or the host
-//! has no session bus, the bridge stays inert and the compositor keeps
-//! running.
-
-use std::io::{self, ErrorKind, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use emthin_dbus::router::{RouterNotification, RouterRequest};
+use emthin_dbus::router::{BridgeCommand, BridgeNotification};
 use emthin_dbus::FcitxEvent;
 
-/// The bridge is "live" iff `router_ipc.is_some()`.
 #[derive(Default)]
 pub struct DbusBridge {
-    /// Router subprocess (emthin-dbus-router).
-    router_child: Option<Child>,
-    /// IPC connection to the router (Content-Length framed JSON-RPC).
-    router_ipc: Option<UnixStream>,
-    /// Bus socket path injected into children via DBUS_SESSION_BUS_ADDRESS.
+    cmd_tx: Option<mpsc::Sender<BridgeCommand>>,
+    notify_rx: Option<mpsc::Receiver<BridgeNotification>>,
     listen_path: Option<PathBuf>,
-    /// Runtime session dir owned by us; cleaned up on shutdown.
     session_dir: Option<PathBuf>,
-    /// Private dbus-daemon child when --dbus-isolated is in effect.
     isolated_daemon: Option<Child>,
-    /// Buffer for partial IPC frame reads.
-    read_buf: Vec<u8>,
-    /// Non-fcitx notifications from router (RuleAdded, RuleRemoved, RuleList).
-    pending_notifications: Vec<RouterNotification>,
 }
 
 impl std::fmt::Debug for DbusBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DbusBridge")
-            .field("router", &self.router_child.is_some())
-            .field("listen_path", &self.listen_path)
-            .field("session_dir", &self.session_dir)
+            .field("active", &self.cmd_tx.is_some())
             .field("isolated_daemon", &self.isolated_daemon.is_some())
             .finish()
     }
 }
 
 impl DbusBridge {
-    /// Resolve upstream address, create session dir, spawn router.
-    fn create(
-        listen_path: PathBuf,
-        ipc_path: PathBuf,
-        session_dir: PathBuf,
-        upstream_path: PathBuf,
-    ) -> Self {
-        let mut cmd = Command::new("emthin-dbus-router");
-        cmd.arg("--listen")
-            .arg(&listen_path)
-            .arg("--ipc")
-            .arg(&ipc_path)
-            .arg("--upstream")
-            .arg(&upstream_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let mut router_child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to spawn emthin-dbus-router; bridge inert");
-                std::fs::remove_dir_all(&session_dir).ok();
-                return Self::default();
-            }
-        };
-
-        // Wait for IPC socket to appear
-        if let Err(e) = wait_for_socket(&ipc_path, &mut router_child) {
-            tracing::warn!(error = %e, "router IPC socket never appeared; bridge inert");
-            kill_child(router_child);
-            let _ = std::fs::remove_dir_all(&session_dir);
-            return Self::default();
-        }
-
-        // Connect to router IPC
-        let router_ipc = match UnixStream::connect(&ipc_path) {
-            Ok(s) => {
-                let _ = s.set_nonblocking(true);
-                Some(s)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to connect to router IPC; bridge inert");
-                kill_child(router_child);
-                let _ = std::fs::remove_dir_all(&session_dir);
-                return Self::default();
-            }
-        };
-
-        tracing::info!(
-            ?listen_path,
-            ?session_dir,
-            router_pid = router_child.id(),
-            "dbus router spawned; bus injected into children"
-        );
-
-        Self {
-            router_child: Some(router_child),
-            router_ipc,
-            listen_path: Some(listen_path),
-            session_dir: Some(session_dir),
-            isolated_daemon: None,
-            read_buf: Vec::new(),
-            pending_notifications: Vec::new(),
-        }
-    }
-
-    /// Initialize bridge for the host session bus.
     pub fn init() -> Self {
         let Ok(upstream_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
             tracing::info!("DBUS_SESSION_BUS_ADDRESS not set; dbus bridge inert");
@@ -133,11 +44,20 @@ impl DbusBridge {
         };
 
         let listen_path = session_dir.join("bus.sock");
-        let ipc_path = session_dir.join("router-ipc.sock");
-        Self::create(listen_path, ipc_path, session_dir, upstream_path)
+        let (cmd_tx, notify_rx) =
+            emthin_dbus::router::bridge::spawn(listen_path.clone(), upstream_path);
+
+        tracing::info!(?listen_path, ?session_dir, "dbus bridge started");
+
+        Self {
+            cmd_tx: Some(cmd_tx),
+            notify_rx: Some(notify_rx),
+            listen_path: Some(listen_path),
+            session_dir: Some(session_dir),
+            isolated_daemon: None,
+        }
     }
 
-    /// Initialize with an isolated dbus-daemon as upstream.
     pub fn init_isolated() -> Self {
         let Some(session_dir) = create_session_dir() else {
             return Self::default();
@@ -170,13 +90,18 @@ impl DbusBridge {
         }
 
         let listen_path = session_dir.join("bus.sock");
-        let ipc_path = session_dir.join("router-ipc.sock");
-        let mut bridge = Self::create(listen_path, ipc_path, session_dir, daemon_socket);
-        bridge.isolated_daemon = Some(daemon);
-        bridge
+        let (cmd_tx, notify_rx) =
+            emthin_dbus::router::bridge::spawn(listen_path.clone(), daemon_socket);
+
+        Self {
+            cmd_tx: Some(cmd_tx),
+            notify_rx: Some(notify_rx),
+            listen_path: Some(listen_path),
+            session_dir: Some(session_dir),
+            isolated_daemon: Some(daemon),
+        }
     }
 
-    /// Inject DBUS_SESSION_BUS_ADDRESS into cmd if bridge is live.
     pub fn inject_env(&self, cmd: &mut Command) {
         if let Some(path) = &self.listen_path {
             cmd.env(
@@ -186,102 +111,57 @@ impl DbusBridge {
         }
     }
 
-    /// Send a RouterRequest to the router subprocess.
-    pub fn send_rpc(&mut self, msg: &RouterRequest) {
-        let Some(ref mut ipc) = self.router_ipc else {
-            return;
-        };
-        let data = match serde_json::to_string(msg) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(error = %e, "send_rpc: serialize failed");
-                return;
-            }
-        };
-        let header = format!("Content-Length: {}\r\n\r\n", data.len());
-        if let Err(e) = ipc
-            .write_all(header.as_bytes())
-            .and_then(|_| ipc.write_all(data.as_bytes()))
-        {
-            tracing::warn!(error = %e, "send_rpc: write failed");
-        }
-    }
-
-    /// Drain available FcitxEvent notifications from the router IPC socket.
     pub fn take_fcitx_events(&mut self) -> Vec<FcitxEvent> {
-        let Some(ref mut ipc) = self.router_ipc else {
+        let Some(ref mut rx) = self.notify_rx else {
             return vec![];
         };
-
-        // Read available bytes
-        let mut tmp = [0u8; 16384];
+        let mut events = Vec::new();
         loop {
-            match ipc.read(&mut tmp) {
-                Ok(0) => break,
-                Ok(n) => self.read_buf.extend_from_slice(&tmp[..n]),
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    tracing::warn!(error = %e, "router IPC read error");
+            match rx.try_recv() {
+                Ok(BridgeNotification::FcitxEvent(e)) => events.push(e),
+                Ok(_) => continue,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.cmd_tx = None;
+                    self.notify_rx = None;
                     break;
                 }
             }
         }
-
-        if self.read_buf.is_empty() {
-            return vec![];
-        }
-
-        // Parse complete Content-Length framed notifications
-        let mut events = Vec::new();
-        loop {
-            let header_end = self.read_buf.windows(4).position(|w| w == b"\r\n\r\n");
-            let Some(end) = header_end else {
-                break;
-            };
-
-            let header = std::str::from_utf8(&self.read_buf[..end]).unwrap_or("");
-            let len = header
-                .lines()
-                .find_map(|line| {
-                    line.strip_prefix("Content-Length:")
-                        .and_then(|s| s.trim().parse::<usize>().ok())
-                })
-                .unwrap_or(0);
-
-            if len == 0 || self.read_buf.len() < end + 4 + len {
-                break;
-            }
-
-            let body: Vec<u8> = self.read_buf.drain(..end + 4 + len).collect();
-            let notification: RouterNotification = match serde_json::from_slice(&body[end + 4..]) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!(error = %e, "router IPC: parse notification failed");
-                    continue;
-                }
-            };
-
-            if let RouterNotification::FcitxEvent(event) = notification {
-                events.push(event);
-            } else {
-                self.pending_notifications.push(notification);
-            }
-        }
-
         events
     }
 
-    /// Drain pending non-fcitx notifications from the router.
-    pub fn take_router_notifications(&mut self) -> Vec<RouterNotification> {
-        std::mem::take(&mut self.pending_notifications)
+    pub fn send_rpc(&mut self, cmd: BridgeCommand) {
+        if let Some(ref tx) = self.cmd_tx {
+            let _ = tx.send(cmd);
+        }
     }
 
-    /// Drop the router, daemon, and session dir.
-    pub fn shutdown(&mut self) {
-        self.router_ipc = None;
-        if let Some(child) = self.router_child.take() {
-            kill_child(child);
+    pub fn take_non_fcitx_notifications(&mut self) -> Vec<BridgeNotification> {
+        let Some(ref mut rx) = self.notify_rx else {
+            return vec![];
+        };
+        let mut notifs = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(BridgeNotification::FcitxEvent(_)) => continue,
+                Ok(n) => notifs.push(n),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.cmd_tx = None;
+                    self.notify_rx = None;
+                    break;
+                }
+            }
         }
+        notifs
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(cmd) = self.cmd_tx.take() {
+            let _ = cmd.send(BridgeCommand::Shutdown);
+        }
+        self.notify_rx = None;
         if let Some(mut daemon) = self.isolated_daemon.take() {
             let _ = daemon.kill();
             let _ = daemon.wait();
@@ -292,15 +172,11 @@ impl DbusBridge {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn parse_bus_address(addr: &str) -> io::Result<PathBuf> {
+fn parse_bus_address(addr: &str) -> std::io::Result<PathBuf> {
     const PREFIX: &str = "unix:path=";
     let stripped = addr.strip_prefix(PREFIX).ok_or_else(|| {
-        io::Error::new(
-            ErrorKind::InvalidInput,
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
             format!("unsupported bus address: {addr}"),
         )
     })?;
@@ -320,36 +196,7 @@ fn create_session_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-fn kill_child(mut child: Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-fn wait_for_socket(socket: &Path, child: &mut Child) -> io::Result<()> {
-    const TIMEOUT: Duration = Duration::from_secs(3);
-    const POLL_INTERVAL: Duration = Duration::from_millis(25);
-    let start = Instant::now();
-    loop {
-        if socket.exists() {
-            return Ok(());
-        }
-        // Check if child exited (try_wait returns io::Result<Option<ExitStatus>>)
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!(
-                "router exited before binding socket: {status}"
-            )));
-        }
-        if start.elapsed() > TIMEOUT {
-            return Err(io::Error::new(
-                ErrorKind::TimedOut,
-                "router IPC socket did not appear within 3s",
-            ));
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn spawn_isolated_daemon(config_path: &Path) -> std::io::Result<Child> {
+fn spawn_isolated_daemon(config_path: &std::path::Path) -> std::io::Result<Child> {
     let mut cmd = Command::new("dbus-daemon");
     cmd.arg("--nofork")
         .arg(format!("--config-file={}", config_path.display()))
@@ -367,7 +214,7 @@ fn spawn_isolated_daemon(config_path: &Path) -> std::io::Result<Child> {
     cmd.spawn()
 }
 
-fn wait_for_daemon_socket(socket: &Path, daemon: &mut Child) -> std::io::Result<()> {
+fn wait_for_daemon_socket(socket: &std::path::Path, daemon: &mut Child) -> std::io::Result<()> {
     const TIMEOUT: Duration = Duration::from_secs(3);
     const POLL_INTERVAL: Duration = Duration::from_millis(25);
     let start = Instant::now();
@@ -391,9 +238,9 @@ fn wait_for_daemon_socket(socket: &Path, daemon: &mut Child) -> std::io::Result<
 }
 
 fn write_minimal_session_config(
-    path: &Path,
-    services_dir: &Path,
-    socket: &Path,
+    path: &std::path::Path,
+    services_dir: &std::path::Path,
+    socket: &std::path::Path,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(services_dir)?;
     let xml = format!(
