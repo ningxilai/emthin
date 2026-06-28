@@ -26,11 +26,10 @@
 ;; ── Global state ──
 
 (defvar emthin--header-offset nil
-  "Pixel height of GTK menu-bar + tool-bar. Seeded once on first surface_size.")
+  "Pixel height of GTK menu-bar + tool-bar. Updated on every surface_size event.")
 
-(defvar emthin--frame-layout nil
-  "Frame-level layout strategy.  nil = fill behavior (wid-wins).
-Set to an emthin-layout instance to change sync behavior.")
+(defvar emthin--frame-layout (make-instance 'emthin-layout-fill)
+  "Frame-level layout strategy.  Defaults to fill behavior (wid-wins).")
 
 (defvar emthin--app-table (make-hash-table :test 'eql)
   "window-id → emthin--app instance")
@@ -93,8 +92,7 @@ Set to an emthin-layout instance to change sync behavior.")
       (let* ((buf-name (format "*emthin: %s*"
                                 (if (string-empty-p title) "app" title)))
              (buf (generate-new-buffer buf-name))
-             (layout (or emthin--frame-layout
-                         (make-instance 'emthin-layout-fill)))
+             (layout (make-instance 'emthin-layout-fill))
              (app (make-instance 'emthin--app
                     :window-id window-id :buffer buf :layout layout)))
         (with-current-buffer buf
@@ -147,10 +145,9 @@ Set to an emthin-layout instance to change sync behavior.")
       (oset app last-geometry geo))))
 
 (defun emthin--on-surface-size (width height)
-  "Record header offset from first surface size event."
+  "Record header offset from surface size event."
   (let* ((frame-h (frame-pixel-height))
-         (offset (or emthin--header-offset
-                     (max 0 (- height frame-h)))))
+         (offset (max 0 (- height frame-h))))
     (setq emthin--header-offset offset)
     (message "emthin: surface=%sx%s bars=%dpx" width height offset)))
 
@@ -158,6 +155,11 @@ Set to an emthin-layout instance to change sync behavior.")
   "Handle compositor connected event."
   (message "emthin: connected (version %s)" version)
   (run-hooks 'emthin-connected-hook))
+
+(defun emthin--set-migration-policy (policy)
+  "Set compositor migration policy: \\='manual or \\='by-workspace-affinity."
+  (interactive "SMigration policy (manual/by-workspace-affinity): ")
+  (emthin--send 'set-migration-policy `(:policy ,(symbol-name policy))))
 
 ;; ── Kill-buffer hook ──
 

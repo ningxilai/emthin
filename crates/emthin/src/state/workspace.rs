@@ -165,7 +165,7 @@ pub(crate) fn process_workspace_actions(state: &mut crate::EmthinState) {
                         .send(OutgoingMessage::WorkspaceDestroyed { workspace_id: id });
                 }
             }
-            _ => {}
+            other => tracing::warn!("ext-workspace: unhandled action {other:?}"),
         }
     }
 }

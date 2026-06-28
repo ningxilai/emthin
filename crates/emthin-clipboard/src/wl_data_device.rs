@@ -11,9 +11,9 @@
 //! to snoop the latest focus/key serial; subsequent `set_selection`
 //! calls reuse it.
 //!
-//! Primary selection (middle-click) is not implemented here — the bug
-//! this backend addresses is the CLIPBOARD path. Primary can be added
-//! later via `zwp_primary_selection_device_manager_v1` when needed.
+//! Primary selection (middle-click) uses
+//! `zwp_primary_selection_device_manager_v1` for hosts that expose it,
+//! otherwise degrades gracefully (no-op primary).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -30,6 +30,12 @@ use wayland_client::protocol::{
     wl_registry, wl_seat,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1::{self, ZwpPrimarySelectionDeviceManagerV1},
+    zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
+    zwp_primary_selection_offer_v1::{self, ZwpPrimarySelectionOfferV1},
+    zwp_primary_selection_source_v1::{self, ZwpPrimarySelectionSourceV1},
+};
 
 use crate::backend::{ClipboardBackend, ClipboardEvent, Driver, SelectionKind};
 
@@ -46,6 +52,10 @@ struct State {
     keyboard: Option<WlKeyboard>,
     device: Option<WlDataDevice>,
 
+    // Primary selection protocol (zwp_primary_selection_device_manager_v1).
+    primary_device_mgr: Option<ZwpPrimarySelectionDeviceManagerV1>,
+    primary_device: Option<ZwpPrimarySelectionDeviceV1>,
+
     /// Latest input-event serial from wl_keyboard (enter / key / modifiers).
     /// Compositors require this for set_selection; without it we can't
     /// publish our selection to the host.
@@ -55,11 +65,16 @@ struct State {
     pending_offers: HashMap<ObjectId, Vec<String>>,
     clipboard_source: Option<WlDataSource>,
 
+    primary_offer: Option<ZwpPrimarySelectionOfferV1>,
+    primary_pending_offers: HashMap<ObjectId, Vec<String>>,
+    primary_source: Option<ZwpPrimarySelectionSourceV1>,
+
     events: Vec<ClipboardEvent>,
 
     /// Anti-loop: number of host-selection echo events to suppress
     /// after we call set_selection ourselves.
     suppress_clipboard: u32,
+    suppress_primary: u32,
 }
 
 impl Drop for State {
@@ -69,6 +84,15 @@ impl Drop for State {
         }
         if let Some(s) = self.clipboard_source.take() {
             s.destroy();
+        }
+        if let Some(o) = self.primary_offer.take() {
+            o.destroy();
+        }
+        if let Some(s) = self.primary_source.take() {
+            s.destroy();
+        }
+        if let Some(d) = self.primary_device.take() {
+            d.destroy();
         }
         if let Some(d) = self.device.take() {
             d.release();
@@ -107,15 +131,21 @@ impl WlDataDeviceProxy {
             seat: None,
             keyboard: None,
             device: None,
+            primary_device_mgr: None,
+            primary_device: None,
             latest_serial: None,
             clipboard_offer: None,
             pending_offers: HashMap::new(),
             clipboard_source: None,
+            primary_offer: None,
+            primary_pending_offers: HashMap::new(),
+            primary_source: None,
             events: Vec::new(),
             suppress_clipboard: 0,
+            suppress_primary: 0,
         };
 
-        // Roundtrip 1: discover globals.
+        // Roundtrip 1: discover globals (clipboard + primary selection).
         if let Err(e) = queue.roundtrip(&mut inner) {
             tracing::debug!("wl_data_device roundtrip 1 failed: {e}");
             return None;
@@ -124,6 +154,9 @@ impl WlDataDeviceProxy {
         if let (Some(ref manager), Some(ref seat)) = (&inner.manager, &inner.seat) {
             inner.device = Some(manager.get_data_device(seat, &qh, ()));
             inner.keyboard = Some(seat.get_keyboard(&qh, ()));
+        }
+        if let (Some(ref mgr), Some(ref seat)) = (&inner.primary_device_mgr, &inner.seat) {
+            inner.primary_device = Some(mgr.get_device(seat, &qh, ()));
         }
 
         if inner.device.is_none() {
@@ -135,17 +168,18 @@ impl WlDataDeviceProxy {
             return None;
         }
 
-        // Roundtrip 2: let initial selection event arrive if the parent
-        // surface already has keyboard focus. On most hosts it doesn't
-        // (window just created), so this typically no-ops.
+        // Roundtrip 2: let initial selection events arrive.
         if let Err(e) = queue.roundtrip(&mut inner) {
             tracing::warn!("wl_data_device roundtrip 2 failed: {e}");
             return None;
         }
 
+        let has_ps = inner.primary_device.is_some();
         tracing::info!(
-            "Clipboard sync initialized (wl_data_device_manager v{}, shared connection)",
-            inner.manager.as_ref().map(|m| m.version()).unwrap_or(0)
+            "Clipboard sync initialized (wl_data_device_manager v{}, primary_selection={}, \
+             shared connection)",
+            inner.manager.as_ref().map(|m| m.version()).unwrap_or(0),
+            has_ps,
         );
 
         Some(Self {
@@ -183,61 +217,98 @@ impl ClipboardBackend for WlDataDeviceProxy {
     }
 
     fn receive_from_host(&mut self, kind: SelectionKind, mime_type: &str, fd: OwnedFd) {
-        if kind != SelectionKind::Clipboard {
-            // Primary selection not supported on this backend yet.
-            return;
-        }
-        if let Some(ref offer) = self.inner.clipboard_offer {
-            offer.receive(mime_type.to_string(), fd.as_fd());
-            self.flush();
-        } else {
-            tracing::warn!("wl_data_device receive_from_host: no active offer, fd dropped");
+        match kind {
+            SelectionKind::Clipboard => {
+                if let Some(ref offer) = self.inner.clipboard_offer {
+                    offer.receive(mime_type.to_string(), fd.as_fd());
+                    self.flush();
+                } else {
+                    tracing::warn!("wl_data_device receive clipboard: no active offer");
+                }
+            }
+            SelectionKind::Primary => {
+                if let Some(ref offer) = self.inner.primary_offer {
+                    offer.receive(mime_type.to_string(), fd.as_fd());
+                    self.flush();
+                } else {
+                    tracing::warn!("wl_data_device receive primary: no active offer");
+                }
+            }
         }
     }
 
     fn set_host_selection(&mut self, kind: SelectionKind, mime_types: &[String]) {
-        if kind != SelectionKind::Clipboard {
-            return;
-        }
-        let Some(ref manager) = self.inner.manager else {
-            return;
-        };
-        let Some(ref device) = self.inner.device else {
-            return;
-        };
         let Some(serial) = self.inner.latest_serial else {
             tracing::debug!("wl_data_device set_host_selection: no input serial yet, deferring");
             return;
         };
-
-        let qh = self.queue.handle();
-        let source = manager.create_data_source(&qh, SourceRole::Clipboard);
-        for mime in mime_types {
-            source.offer(mime.clone());
+        match kind {
+            SelectionKind::Clipboard => {
+                let Some(ref manager) = self.inner.manager else {
+                    return;
+                };
+                let Some(ref device) = self.inner.device else {
+                    return;
+                };
+                let qh = self.queue.handle();
+                let source = manager.create_data_source(&qh, SourceRole::Clipboard);
+                for mime in mime_types {
+                    source.offer(mime.clone());
+                }
+                device.set_selection(Some(&source), serial);
+                if let Some(old) = self.inner.clipboard_source.replace(source) {
+                    old.destroy();
+                }
+                self.inner.suppress_clipboard += 1;
+            }
+            SelectionKind::Primary => {
+                let Some(ref mgr) = self.inner.primary_device_mgr else {
+                    return;
+                };
+                let Some(ref device) = self.inner.primary_device else {
+                    return;
+                };
+                let qh = self.queue.handle();
+                let source = mgr.create_source(&qh, ());
+                for mime in mime_types {
+                    source.offer(mime.clone());
+                }
+                device.set_selection(Some(&source), serial);
+                if let Some(old) = self.inner.primary_source.replace(source) {
+                    old.destroy();
+                }
+                self.inner.suppress_primary += 1;
+            }
         }
-        device.set_selection(Some(&source), serial);
-        if let Some(old) = self.inner.clipboard_source.replace(source) {
-            old.destroy();
-        }
-        self.inner.suppress_clipboard += 1;
         self.flush();
     }
 
     fn clear_host_selection(&mut self, kind: SelectionKind) {
-        if kind != SelectionKind::Clipboard {
-            return;
-        }
-        let Some(ref device) = self.inner.device else {
-            return;
-        };
         let Some(serial) = self.inner.latest_serial else {
             return;
         };
-        device.set_selection(None, serial);
-        if let Some(old) = self.inner.clipboard_source.take() {
-            old.destroy();
+        match kind {
+            SelectionKind::Clipboard => {
+                let Some(ref device) = self.inner.device else {
+                    return;
+                };
+                device.set_selection(None, serial);
+                if let Some(old) = self.inner.clipboard_source.take() {
+                    old.destroy();
+                }
+                self.inner.suppress_clipboard += 1;
+            }
+            SelectionKind::Primary => {
+                let Some(ref device) = self.inner.primary_device else {
+                    return;
+                };
+                device.set_selection(None, serial);
+                if let Some(old) = self.inner.primary_source.take() {
+                    old.destroy();
+                }
+                self.inner.suppress_primary += 1;
+            }
         }
-        self.inner.suppress_clipboard += 1;
         self.flush();
     }
 }
@@ -293,6 +364,51 @@ impl State {
     }
 }
 
+// Primary selection helpers (mirror clipboard pattern).
+
+impl State {
+    fn on_primary_selection(&mut self, new_offer: Option<ZwpPrimarySelectionOfferV1>) {
+        let mime_types = new_offer
+            .as_ref()
+            .and_then(|o| self.primary_pending_offers.remove(&o.id()))
+            .unwrap_or_default();
+        self.primary_pending_offers.clear();
+
+        if let Some(old) = self.primary_offer.take() {
+            old.destroy();
+        }
+        self.primary_offer = new_offer;
+
+        if self.suppress_primary > 0 {
+            self.suppress_primary -= 1;
+            return;
+        }
+
+        self.events.push(ClipboardEvent::HostSelectionChanged {
+            kind: SelectionKind::Primary,
+            mime_types,
+        });
+    }
+
+    fn on_primary_source_send(&mut self, mime_type: String, fd: OwnedFd) {
+        self.events.push(ClipboardEvent::HostSendRequest {
+            kind: SelectionKind::Primary,
+            mime_type,
+            write_fd: fd,
+            completion: None,
+        });
+    }
+
+    fn on_primary_source_cancelled(&mut self) {
+        if let Some(s) = self.primary_source.take() {
+            s.destroy();
+        }
+        self.events.push(ClipboardEvent::SourceCancelled {
+            kind: SelectionKind::Primary,
+        });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch impls
 // ---------------------------------------------------------------------------
@@ -317,6 +433,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     let bound =
                         registry.bind::<WlDataDeviceManager, _, _>(name, version.min(3), qh, ());
                     state.manager = Some(bound);
+                }
+                "zwp_primary_selection_device_manager_v1" if state.primary_device_mgr.is_none() => {
+                    let bound = registry.bind::<ZwpPrimarySelectionDeviceManagerV1, _, _>(
+                        name,
+                        version.min(1),
+                        qh,
+                        (),
+                    );
+                    state.primary_device_mgr = Some(bound);
                 }
                 "wl_seat" if state.seat.is_none() => {
                     state.seat = Some(registry.bind(name, version.min(5), qh, ()));
@@ -436,6 +561,89 @@ impl Dispatch<WlDataSource, SourceRole> for State {
             wl_data_source::Event::Cancelled => state.on_source_cancelled(),
             // Target / Action / DndFinished / DndDropPerformed are DnD
             // concerns — ignore for selection-only usage.
+            _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Primary selection protocol dispatch
+// ---------------------------------------------------------------------------
+
+impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &ZwpPrimarySelectionDeviceManagerV1,
+        _: zwp_primary_selection_device_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpPrimarySelectionDeviceV1,
+        event: zwp_primary_selection_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_primary_selection_device_v1::Event;
+        match event {
+            Event::DataOffer { offer } => {
+                state.primary_pending_offers.insert(offer.id(), Vec::new());
+            }
+            Event::Selection { id } => state.on_primary_selection(id),
+            _ => {}
+        }
+    }
+
+    fn event_created_child(opcode: u16, qh: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
+        assert_eq!(
+            opcode,
+            zwp_primary_selection_device_v1::EVT_DATA_OFFER_OPCODE,
+            "unexpected child-creating opcode for zwp_primary_selection_device"
+        );
+        qh.make_data::<ZwpPrimarySelectionOfferV1, ()>(())
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        offer: &ZwpPrimarySelectionOfferV1,
+        event: zwp_primary_selection_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event {
+            if let Some(pending) = state.primary_pending_offers.get_mut(&offer.id()) {
+                pending.push(mime_type);
+            }
+        }
+    }
+}
+
+impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpPrimarySelectionSourceV1,
+        event: zwp_primary_selection_source_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_primary_selection_source_v1::Event::Send { mime_type, fd } => {
+                state.on_primary_source_send(mime_type, fd)
+            }
+            zwp_primary_selection_source_v1::Event::Cancelled => {
+                state.on_primary_source_cancelled()
+            }
             _ => {}
         }
     }

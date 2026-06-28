@@ -4,6 +4,7 @@ pub mod dbus;
 pub mod emacs;
 pub mod focus;
 pub mod ime;
+pub mod migration;
 pub mod workspace;
 pub mod xwayland;
 
@@ -228,6 +229,9 @@ pub struct EmthinState {
     /// not cover.  When true the next Redraw calls render_frame; cleared after.
     pub needs_redraw: bool,
 
+    /// Whether to auto-migrate apps on workspace switch.
+    pub migration_policy: migration::MigrationPolicy,
+
     /// Bridge to the child `emthin-dbus-proxy` process that rewrites IME
     /// cursor-position calls for embedded apps. Populated in `main.rs`
     /// after `init_winit`; stays [`DbusBridge::default`] (inert) if the
@@ -342,6 +346,7 @@ impl EmthinState {
             ime,
             cursor: cursor::CursorState::default(),
             needs_redraw: true,
+            migration_policy: migration::MigrationPolicy::ByWorkspaceAffinity,
             dbus: dbus::DbusBridge::default(),
         })
     }
@@ -614,9 +619,40 @@ impl EmthinState {
         self.workspace.active_name = target.name;
         self.workspace.active_id = target_id;
 
-        // App migration is handled by IPC set_geometry from Emacs (sync-all).
-        // The compositor does NOT auto-migrate because it doesn't know which
-        // apps are displayed in which Emacs frame.
+        // Auto-migrate: ensure every app is mapped in the right space.
+        if self.migration_policy == migration::MigrationPolicy::ByWorkspaceAffinity {
+            let active_id = self.workspace.active_id;
+            let mut to_map = Vec::new();
+            let mut to_unmap = Vec::new();
+            for app in self.apps.windows() {
+                let in_active = self
+                    .workspace
+                    .active_space
+                    .elements()
+                    .any(|w| w == &app.window);
+                match (app.workspace_id == active_id, in_active) {
+                    (true, false) => to_map.push(app.window.clone()),
+                    (false, true) => to_unmap.push(app.window.clone()),
+                    _ => {}
+                }
+            }
+            for w in &to_unmap {
+                self.workspace.active_space.unmap_elem(w);
+                dismiss_popups_for_window(w);
+            }
+            for w in &to_map {
+                self.workspace
+                    .active_space
+                    .map_element(w.clone(), (1, 1), false);
+            }
+            if !to_map.is_empty() || !to_unmap.is_empty() {
+                tracing::debug!(
+                    "auto-migrated: mapped={} unmapped={}",
+                    to_map.len(),
+                    to_unmap.len()
+                );
+            }
+        }
 
         // Reset state that references the old workspace's surfaces.
         // `host_saved_focus` MUST be cleared alongside the prefix/layer
@@ -665,6 +701,11 @@ impl EmthinState {
             self.workspace.count()
         );
         true
+    }
+
+    pub fn set_migration_policy(&mut self, policy: migration::MigrationPolicy) {
+        self.migration_policy = policy;
+        tracing::info!("migration policy set to {policy}");
     }
 
     /// Remove an inactive workspace and its embedded apps.

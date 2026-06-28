@@ -24,11 +24,11 @@ pub fn register_embedded_app(
 
     tracing::info!("embedded app toplevel connected: window_id={window_id} title={title:?}");
 
-    surface.with_pending_state(|s| {
-        s.size = Some((1, 1).into());
-    });
-    surface.send_pending_configure();
-
+    // No initial configure here. The first configure is deferred until
+    // ipc_set_geometry delivers the real size from Emacs. This prevents
+    // a flash where the app renders at its default size (e.g. 800x600)
+    // before being resized to the correct geometry — which would briefly
+    // cover the Emacs frame and the M-x prompt area.
     state.apps.insert(crate::apps::AppWindow {
         window_id,
         window: window.clone(),

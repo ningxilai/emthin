@@ -1,7 +1,6 @@
 use std::os::fd::OwnedFd;
 
-use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
-use smithay::input::pointer::Focus;
+use smithay::input::dnd::{GrabType, Source};
 use smithay::input::Seat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Serial;
@@ -134,33 +133,20 @@ impl DataDeviceHandler for EmthinState {
     }
 }
 
-impl DndGrabHandler for EmthinState {}
+// smithay's DataDeviceHandler requires WaylandDndGrabHandler as a
+// supertrait, but emthin does not implement drag-and-drop.  The
+// implementation unconditionally cancels — any DnD attempt from an
+// embedded client (Pointer or Touch) is rejected immediately.
 impl WaylandDndGrabHandler for EmthinState {
     fn dnd_requested<S: Source>(
         &mut self,
         source: S,
         _icon: Option<WlSurface>,
-        seat: Seat<Self>,
-        serial: Serial,
-        type_: GrabType,
+        _seat: Seat<Self>,
+        _serial: Serial,
+        _type_: GrabType,
     ) {
-        match type_ {
-            GrabType::Pointer => {
-                let Some(ptr) = seat.get_pointer() else {
-                    source.cancel();
-                    return;
-                };
-                let Some(start_data) = ptr.grab_start_data() else {
-                    source.cancel();
-                    return;
-                };
-                let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
-                ptr.set_grab(self, grab, serial, Focus::Keep);
-            }
-            GrabType::Touch => {
-                source.cancel();
-            }
-        }
+        source.cancel();
     }
 }
 

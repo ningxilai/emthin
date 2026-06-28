@@ -41,8 +41,6 @@ type IcRegistry = Arc<Mutex<HashMap<String, DBusConnection>>>;
 type Routing = Arc<Mutex<RoutingTable>>;
 
 type CmdSender = mpsc::Sender<BridgeCommand>;
-#[allow(dead_code)]
-type CmdReceiver = mpsc::Receiver<BridgeCommand>;
 type NotifySender = mpsc::Sender<BridgeNotification>;
 type NotifyReceiver = mpsc::Receiver<BridgeNotification>;
 

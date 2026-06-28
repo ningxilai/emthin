@@ -70,6 +70,10 @@ pub enum IncomingMessage {
     },
     /// List all current DBus routing rules.
     DbusRouterListRules,
+    /// Set the compositor's app migration policy.
+    SetMigrationPolicy {
+        policy: crate::state::migration::MigrationPolicy,
+    },
 }
 
 /// emthin → Emacs
@@ -205,6 +209,13 @@ impl IncomingMessage {
                 id: params_get_string(params, "id")?,
             },
             "dbus_router_list_rules" => Self::DbusRouterListRules,
+            "set_migration_policy" => {
+                let policy_str = params_get_string(params, "policy")?;
+                let policy: crate::state::migration::MigrationPolicy = policy_str
+                    .parse()
+                    .map_err(|e: String| format!("invalid policy: {e}"))?;
+                Self::SetMigrationPolicy { policy }
+            }
             other => return Err(format!("unknown IPC method: {other}")),
         })
     }
@@ -434,6 +445,37 @@ mod tests {
             msg,
             IncomingMessage::SwitchWorkspace { workspace_id: 5 }
         ));
+    }
+
+    #[test]
+    fn parses_set_migration_policy() {
+        let params = serde_json::json!({"policy":"by_workspace_affinity"});
+        let msg = IncomingMessage::from_jsonrpc("set_migration_policy", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::SetMigrationPolicy {
+                policy: crate::state::migration::MigrationPolicy::ByWorkspaceAffinity,
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_set_migration_policy_manual() {
+        let params = serde_json::json!({"policy":"manual"});
+        let msg = IncomingMessage::from_jsonrpc("set_migration_policy", &params).unwrap();
+        assert!(matches!(
+            msg,
+            IncomingMessage::SetMigrationPolicy {
+                policy: crate::state::migration::MigrationPolicy::Manual,
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_migration_policy() {
+        let params = serde_json::json!({"policy":"auto"});
+        let result = IncomingMessage::from_jsonrpc("set_migration_policy", &params);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -362,8 +362,11 @@ impl XdgShellHandler for EmthinState {
         }
     }
 
-    fn unmaximize_request(&mut self, _surface: ToplevelSurface) {
-        // Emacs always fills the compositor window — ignore unmaximize
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if self.is_emacs_surface(&surface) {
+            tracing::trace!("Emacs requested unmaximize — policy keeps maximized; re-asserting");
+            Self::set_toplevel_state(&surface, xdg_toplevel::State::Maximized, true);
+        }
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {

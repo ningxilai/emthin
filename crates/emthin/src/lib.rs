@@ -17,5 +17,5 @@ pub mod xwayland_satellite;
 // Re-export state sub-modules at crate root so existing
 // `crate::apps::*`, `crate::focus::*`, `crate::ime::*`,
 // `crate::workspace::*` paths keep resolving.
-pub use state::{apps, cursor, emacs, focus, ime, workspace, xwayland};
+pub use state::{apps, cursor, emacs, focus, ime, migration, workspace, xwayland};
 pub use state::{EmthinState, KeyboardFocusTarget};

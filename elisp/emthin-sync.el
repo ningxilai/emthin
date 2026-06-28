@@ -11,6 +11,24 @@
 (defvar emthin--last-focused-wid 'unset
   "Last window-id sent via set_focus IPC.  Change-detection guard.")
 
+;; ── Interactive layout switching ──
+
+(defun emthin-set-layout (layout)
+  "Set frame-level layout strategy.
+LAYOUT is a symbol: `fill', `tab', `side-by-side', or `float'."
+  (interactive
+   (list (intern (completing-read "Layout: "
+                                  '("fill" "tab" "side-by-side" "float")
+                                  nil t))))
+  (setq emthin--frame-layout
+        (pcase layout
+          ('fill (make-instance 'emthin-layout-fill))
+          ('tab (make-instance 'emthin-layout-tab))
+          ('side-by-side (make-instance 'emthin-layout-side-by-side))
+          ('float (make-instance 'emthin-layout-float))
+          (_ (user-error "Unknown layout: %s" layout))))
+  (message "emthin: layout set to %s" layout))
+
 ;; ── Data collection ──
 
 (defun emthin--wid-wins-data (frame)
@@ -28,7 +46,8 @@
   "Send set_geometry for APP if its geometry changed.
 Computes geometry via `emthin--compute-layout' on the app's layout object."
   (condition-case err
-      (let* ((geo (emthin--compute-layout (oref app layout) window (emthin--frame-header-offset)))
+      (let* ((geo (emthin--compute-layout (oref app layout) window
+                                          (emthin--frame-header-offset)))
              (old (oref app last-geometry)))
         (unless (equal geo old)
           (oset app last-geometry geo)
@@ -54,8 +73,12 @@ Computes geometry via `emthin--compute-layout' on the app's layout object."
       `(:window_id ,window-id
         :visible ,(if now-visible t :json-false)))))
 
-(defun emthin--sync-mirrors (wid diff)
-  "Apply mirror DIFF plist for WID synchronously."
+;; ── Mirror IPC sync ──
+
+(defun emthin--sync-mirrors (wid diff &optional no-update-geometry)
+  "Apply mirror DIFF plist for WID synchronously.
+When NO-UPDATE-GEOMETRY is non-nil, skip update-mirror-geometry IPC
+(the frame-level layout has already set correct mirror geometry)."
   (condition-case err
       (let ((source-win (plist-get diff :source-win))
             (promote-vid (plist-get diff :promote-vid))
@@ -69,8 +92,10 @@ Computes geometry via `emthin--compute-layout' on the app's layout object."
           (emthin--send 'promote-mirror `(:window_id ,wid :view_id ,promote-vid)))
         (dolist (pair additions)
           (emthin--send-mirror-geometry 'add-mirror wid (car pair) (cdr pair)))
-        (dolist (pair updates)
-          (emthin--send-mirror-geometry 'update-mirror-geometry wid (car pair) (cdr pair)))
+        (unless no-update-geometry
+          (dolist (pair updates)
+            (emthin--send-mirror-geometry 'update-mirror-geometry
+              wid (car pair) (cdr pair))))
         (when source-win
           (when-let* ((app (emthin--find-app wid)))
             (emthin--apply-geometry app source-win)))
@@ -82,14 +107,12 @@ Computes geometry via `emthin--compute-layout' on the app's layout object."
 
 ;; ── Sync strategy (dispatched on frame-level layout) ──
 
-(cl-defgeneric emthin--sync-apps (layout frame)
-  "Sync visibility and geometry for all apps in FRAME under LAYOUT.")
-
-(cl-defmethod emthin--sync-apps ((_layout emthin-layout-tab) frame)
+(cl-defmethod emthin--sync-apps ((_layout emthin-layout-tab) _wid-wins _mirror-table)
   "Tab: iterate all apps, only actively displayed buffer visible."
   (maphash
    (lambda (_wid app)
-     (let* ((buf (oref app buffer))
+     (let* ((frame (selected-frame))
+            (buf (oref app buffer))
             (win (get-buffer-window buf frame))
             (vis (and win t))
             (prev (buffer-local-value 'emthin--visible buf)))
@@ -98,20 +121,38 @@ Computes geometry via `emthin--compute-layout' on the app's layout object."
          (emthin--apply-geometry app win))))
    emthin--app-table))
 
-(cl-defmethod emthin--sync-apps (_layout frame)
-  "Default (nil / fill / float / unknown): wid-wins."
-  (let ((wid-wins (emthin--wid-wins-data frame)))
-    (maphash (lambda (wid wins)
-               (let* ((now-visible (and wins t))
-                      (app (emthin--find-app wid))
-                      (was-visible (if app
-                                     (buffer-local-value
-                                      'emthin--visible (oref app buffer))
-                                   nil)))
-                 (emthin--apply-visible wid now-visible was-visible)
-                 (when app
-                   (emthin--apply-geometry app (car wins)))))
-             wid-wins)))
+(cl-defmethod emthin--sync-apps ((layout emthin-layout-side-by-side)
+                                  wid-wins mirror-table)
+  "Side-by-side: source in main area, mirrors as thumbnails on the right."
+  (maphash
+   (lambda (wid wins)
+     (let* ((state (gethash wid mirror-table))
+            (source-win (if state (car state) (car wins)))
+            (mirrors (and state (cdr state)))
+            (num-mirrors (length mirrors)))
+       (when source-win
+         (let ((app (emthin--find-app wid)))
+           (when app
+             (emthin--apply-visible wid (and wins t)
+               (buffer-local-value 'emthin--visible (oref app buffer)))
+             (emthin--apply-geometry app source-win)))
+         (let ((side-x (oref layout source-ratio))
+               (side-w (- 1.0 (oref layout source-ratio)))
+               (mirror-h (if (zerop num-mirrors) 0 (/ 1.0 num-mirrors))))
+           (cl-loop for pair in mirrors
+                    for i from 0
+                    for vid = (car pair)
+                    do
+                    (let ((rect (make-emthin--rect
+                                  :x side-x :y (* i mirror-h)
+                                  :w side-w :h mirror-h)))
+                      (emthin--send 'update-mirror-geometry
+                        `(:window_id ,wid :view_id ,vid
+                          :x ,(emthin--rect-x rect)
+                          :y ,(emthin--rect-y rect)
+                          :w ,(emthin--rect-w rect)
+                          :h ,(emthin--rect-h rect)))))))))
+   wid-wins))
 
 ;; ── Frame sync ──
 
@@ -121,27 +162,29 @@ Only processes the active workspace's frame."
   (when emthin--process
     (let ((ws-id (gethash frame emthin--frame-workspace-table)))
       (when (eql ws-id emthin--active-workspace-id)
-        (let ((next-view-id emthin--next-view-id))
+        (let ((next-view-id emthin--next-view-id)
+              (wid-wins (emthin--wid-wins-data frame)))
           (unwind-protect
               (progn
                 (condition-case err
-                    (emthin--sync-apps emthin--frame-layout frame)
+                    (emthin--sync-apps emthin--frame-layout wid-wins
+                                       emthin--mirror-table)
                   (error
                    (message "emthin: sync-apps error: %s" err)))
-                ;; Mirror sync: compute diffs and send IPC for each app.
                 (condition-case err
-                    (let ((wid-wins (emthin--wid-wins-data frame)))
-                      (maphash
-                       (lambda (wid wins)
-                         (let* ((prev-state (gethash wid emthin--mirror-table))
-                                (prev-source (car prev-state))
-                                (prev-mirrors (cdr prev-state))
-                                (mirror-result (emthin--mirror-diff
-                                                wins prev-source prev-mirrors
-                                                next-view-id)))
-                           (setq next-view-id (cdr mirror-result))
-                           (emthin--sync-mirrors wid (car mirror-result))))
-                       wid-wins))
+                    (maphash
+                     (lambda (wid wins)
+                       (let* ((prev-state (gethash wid emthin--mirror-table))
+                              (prev-source (car prev-state))
+                              (prev-mirrors (cdr prev-state))
+                              (mirror-result (emthin--mirror-diff
+                                              wins prev-source prev-mirrors
+                                              next-view-id)))
+                         (setq next-view-id (cdr mirror-result))
+                         (emthin--sync-mirrors wid (car mirror-result)
+                           (emthin--layout-manages-mirror-geometry
+                            emthin--frame-layout))))
+                     wid-wins)
                   (error
                    (message "emthin: mirror sync error: %s" err))))
             (emthin--sync-focus frame)

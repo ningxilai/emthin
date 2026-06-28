@@ -12,6 +12,9 @@
 (defvar emthin--pending-frame-queue nil
   "Frames awaiting workspace_created IPC confirmation (FIFO).")
 
+(defvar emthin--last-command-frame nil
+  "Frame at the end of the last command.  Used for change detection.")
+
 ;; ── Frame ↔ workspace mapping ──
 
 (defun emthin--map-frame-to-workspace (frame workspace-id)
@@ -96,9 +99,6 @@
      (message "emthin: delete-frame error: %s" err))))
 
 ;; ── Frame switch detection via post-command-hook ──
-
-(defvar emthin--last-command-frame nil
-  "Frame at the end of the last command.  Used for change detection.")
 
 (defun emthin--detect-frame-switch ()
   "Detect frame change and notify compositor.

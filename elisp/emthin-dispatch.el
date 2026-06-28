@@ -41,6 +41,15 @@
 (defvar emthin--xwayland-ready-hook nil
   "Hook run on XWayland ready. Args: none")
 
+(defvar emthin--dbus-router-rules-hook nil
+  "Hook run on DBus router rule list. Args: (rules)")
+
+(defvar emthin--dbus-router-rule-added-hook nil
+  "Hook run on DBus router rule added. Args: (id rule)")
+
+(defvar emthin--dbus-router-rule-removed-hook nil
+  "Hook run on DBus router rule removed. Args: (id)")
+
 ;; ── Dispatch function ──
 
 (defun emthin--dispatch (method params)
@@ -89,6 +98,16 @@
     ('workspace_destroyed
      (run-hook-with-args 'emthin--workspace-destroyed-hook
        (plist-get params :workspace_id)))
+    ('dbus_router_rules
+     (run-hook-with-args 'emthin--dbus-router-rules-hook
+       (plist-get params :rules)))
+    ('dbus_router_rule_added
+     (run-hook-with-args 'emthin--dbus-router-rule-added-hook
+       (plist-get params :id)
+       (plist-get params :rule)))
+    ('dbus_router_rule_removed
+     (run-hook-with-args 'emthin--dbus-router-rule-removed-hook
+       (plist-get params :id)))
     (_
      (message "emthin: unknown message type %s" method))))
 

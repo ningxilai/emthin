@@ -66,6 +66,10 @@ pub fn handle_ipc_message(state: &mut EmthinState, msg: IncomingMessage) {
                 .dbus
                 .send_rpc(emthin_dbus::router::BridgeCommand::ListRules);
         }
+        IncomingMessage::SetMigrationPolicy { policy } => {
+            tracing::debug!("IPC set_migration_policy {policy}");
+            state.set_migration_policy(policy);
+        }
     }
 }
 
