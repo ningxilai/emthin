@@ -15,13 +15,10 @@
 //! }
 //! ```
 //!
-//! Plus one **override**: `prefix_active` (Emacs C-x/C-c/M-x chord)
-//! forces IME off so the chord reaches Emacs cleanly.
-//!
 //! Decision is trivial:
 //!
 //! ```text
-//! desired_ime_allowed = !prefix_active && match owner {
+//! desired_ime_allowed = match owner {
 //!     None       => false,
 //!     Tip        => true,                 // fallback area OK
 //!     Dbus       => cursor.is_real,       // wait for client's first SetCursorRect
@@ -147,11 +144,6 @@ pub struct ImeBridge {
     /// subsequent ones inside the window are dropped.
     dbus_cursor_received: bool,
 
-    /// Override: Emacs prefix chord (C-x/C-c/M-x) forces IME off so
-    /// continuation keys reach Emacs and any half-typed preedit is
-    /// cancelled.
-    prefix_active: bool,
-
     /// What we last told winit via `set_ime_allowed`.
     last_applied_ime_allowed: bool,
     /// What we last told winit via `set_ime_cursor_area`.
@@ -172,7 +164,6 @@ impl ImeBridge {
             tip_snapshot: None,
             dbus_focused_at: None,
             dbus_cursor_received: false,
-            prefix_active: false,
             last_applied_ime_allowed: false,
             last_applied_cursor_area: None,
         }
@@ -189,9 +180,6 @@ impl ImeBridge {
     }
 
     fn desired_ime_allowed(&self) -> bool {
-        if self.prefix_active {
-            return false;
-        }
         match &self.owner {
             ImeOwner::None => false,
             // Tip activates immediately — Ctrl+Space toggling needs
@@ -422,16 +410,6 @@ impl ImeBridge {
         }
     }
 
-    // ----- Override -----
-
-    /// Mark the start / end of an Emacs prefix chord.
-    pub fn set_prefix_active(&mut self, active: bool) {
-        if self.prefix_active != active {
-            tracing::debug!(active, "IME: prefix_active toggled");
-            self.prefix_active = active;
-        }
-    }
-
     // ----- Reset -----
 
     pub fn reset_on_workspace_switch(&mut self) {
@@ -447,7 +425,6 @@ impl ImeBridge {
         // both so a new-workspace FocusIn doesn't replay a rect from
         // an unrelated app.
         self.cursor_cache.clear();
-        self.prefix_active = false;
         // Don't reset `last_applied_*` — next sync_to_winit diffs.
     }
 

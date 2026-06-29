@@ -68,13 +68,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_prefix_done() {
-        let wire = br#"{"jsonrpc":"2.0","method":"prefix_done","params":null}"#;
-        let msg = parse_incoming(wire).unwrap();
-        assert!(matches!(msg, IncomingMessage::PrefixDone));
-    }
-
-    #[test]
     fn parse_set_focus_no_window_id() {
         let wire = br#"{"jsonrpc":"2.0","method":"set_focus","params":{}}"#;
         let msg = parse_incoming(wire).unwrap();

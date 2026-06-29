@@ -22,13 +22,7 @@ pub enum IncomingMessage {
         window_id: u64,
         visible: bool,
     },
-    /// Emacs finished processing a prefix key sequence in an embedded
-    /// app buffer; clear `prefix_active` AND restore the saved app focus.
-    PrefixDone,
-    /// Emacs finished any command (global hook); only clear
-    /// `prefix_active` so host IME can resume — focus is left
-    /// wherever Emacs's prefix command put it.
-    PrefixClear,
+
     /// Create a mirror view (scaled copy) of the embedded app's surface.
     AddMirror {
         window_id: u64,
@@ -163,8 +157,7 @@ impl IncomingMessage {
                 window_id: params_get_u64(params, "window_id")?,
                 visible: params_get_bool(params, "visible")?,
             },
-            "prefix_done" => Self::PrefixDone,
-            "prefix_clear" => Self::PrefixClear,
+
             "add_mirror" => Self::AddMirror {
                 window_id: params_get_u64(params, "window_id")?,
                 view_id: params_get_u64(params, "view_id")?,
@@ -358,12 +351,6 @@ mod tests {
                 visible: false
             }
         ));
-    }
-
-    #[test]
-    fn parses_prefix_done() {
-        let msg = IncomingMessage::from_jsonrpc("prefix_done", &serde_json::Value::Null).unwrap();
-        assert!(matches!(msg, IncomingMessage::PrefixDone));
     }
 
     #[test]

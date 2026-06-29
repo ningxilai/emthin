@@ -8,22 +8,11 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     reexports::wayland_server::Resource,
-    utils::SERIAL_COUNTER,
+    utils::{IsAlive, SERIAL_COUNTER},
     wayland::seat::WaylandFocus,
 };
 
 use crate::state::EmthinState;
-
-// XKB keycodes (evdev + 8, matching winit backend convention).
-const KEYCODE_X: u32 = 53;
-const KEYCODE_V: u32 = 55;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TranslateOp {
-    Copy,
-    Cut,
-    Paste,
-}
 
 impl EmthinState {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -35,115 +24,22 @@ impl EmthinState {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
 
-                let focus_on_emacs = keyboard.current_focus() == self.emacs_focus_target();
-
-                let mut translate_op = None;
-                let (is_prefix, mods_changed) = keyboard.input_intercept(
+                let (_is_wakeup, mods_changed) = keyboard.input_intercept(
                     self,
                     event.key_code(),
                     event.state(),
-                    |_state, modifiers, keysym_handle| {
+                    |_state, _modifiers, keysym_handle| {
                         let Some(sym) = keysym_handle.raw_latin_sym_or_raw_current_sym() else {
                             return false;
                         };
-                        let key = sym.raw();
-
-                        if focus_on_emacs {
-                            // When Emacs has keyboard focus, only
-                            // intercept true prefix keys (C-x, C-c,
-                            // M-x).  Emacs itself handles M-w, C-w,
-                            // C-y natively.
-                            (modifiers.ctrl && matches!(key, keysyms::KEY_x | keysyms::KEY_c))
-                                || (modifiers.alt && key == keysyms::KEY_x)
-                        } else {
-                            // When an embedded app has keyboard focus,
-                            // intercept Emacs clipboard shortcuts for
-                            // translation AND prefix keys for focus
-                            // redirect.
-                            if modifiers.alt {
-                                match key {
-                                    keysyms::KEY_w => {
-                                        translate_op = Some(TranslateOp::Copy);
-                                        return true;
-                                    }
-                                    keysyms::KEY_x => return true,
-                                    _ => {}
-                                }
-                            }
-                            if modifiers.ctrl {
-                                match key {
-                                    keysyms::KEY_w => {
-                                        translate_op = Some(TranslateOp::Cut);
-                                        return true;
-                                    }
-                                    keysyms::KEY_y => {
-                                        translate_op = Some(TranslateOp::Paste);
-                                        return true;
-                                    }
-                                    keysyms::KEY_x | keysyms::KEY_c => return true,
-                                    _ => {}
-                                }
-                            }
-                            false
-                        }
+                        // Only intercept WakeUp for focus toggle.
+                        sym.raw() == keysyms::KEY_XF86WakeUp
                     },
                 );
 
-                if is_prefix {
-                    if let Some(op) = translate_op {
-                        // Clipboard injection — keep focus on the
-                        // embedded app, suppress the original key,
-                        // synthesise the translated shortcut.
-                        //
-                        // Each pair must first update xkb state
-                        // (input_intercept) so the forwarded event
-                        // carries correct modifiers — the closure
-                        // always returns true (consume) since we
-                        // manually forward via input_forward with
-                        // the updated mods_state behind.
-                        if event.state() == KeyState::Pressed {
-                            use smithay::input::keyboard::Keycode;
-                            if matches!(op, TranslateOp::Copy) {
-                                // M-w — promote the embedded app's
-                                // PRIMARY selection to CLIPBOARD via
-                                // an async pipe.  No key injection.
-                                self.promote_primary_to_clipboard();
-                            }
-                            let mut inject_one = |kc: u32, st| {
-                                let kc: Keycode = kc.into();
-                                keyboard.input_intercept(self, kc, st, |_, _, _| true);
-                                keyboard.input_forward(self, kc, st, serial, time, true);
-                            };
-                            match op {
-                                TranslateOp::Copy => {}
-                                TranslateOp::Cut => {
-                                    inject_one(KEYCODE_X, KeyState::Pressed);
-                                    inject_one(KEYCODE_X, KeyState::Released);
-                                }
-                                TranslateOp::Paste => {
-                                    inject_one(KEYCODE_V, KeyState::Pressed);
-                                    inject_one(KEYCODE_V, KeyState::Released);
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // True prefix key (C-x, C-c, M-x) — redirect
-                    // focus to Emacs so the next keystroke(s) reach
-                    // Emacs for the chord.
-                    if !self.focus.is_active(crate::state::FocusOverride::Prefix) {
-                        self.focus.enter(
-                            crate::state::FocusOverride::Prefix,
-                            keyboard.current_focus(),
-                        );
-                    }
-                    self.ime.set_prefix_active(true);
-                    if let Some(emacs) = self.emacs_focus_target() {
-                        if keyboard.current_focus().as_ref() != Some(&emacs) {
-                            keyboard.set_focus(self, Some(emacs), SERIAL_COUNTER.next_serial());
-                        }
-                    }
+                if _is_wakeup && event.state() == KeyState::Pressed {
+                    self.handle_wakeup();
+                    return;
                 }
 
                 keyboard.input_forward(
@@ -280,10 +176,6 @@ impl EmthinState {
                     });
                     if !same_client {
                         keyboard.set_focus(self, focus, serial);
-                        self.focus.exit(crate::state::FocusOverride::Prefix);
-                        // Mouse-click cancels any in-flight prefix
-                        // chord — must also re-enable host IME.
-                        self.ime.set_prefix_active(false);
                     }
                 }
 
@@ -345,6 +237,32 @@ impl EmthinState {
         }
     }
 
+    /// Toggle keyboard focus between Emacs and the last-focused embedded app.
+    /// Called on WakeUp key press.
+    fn handle_wakeup(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        let current = keyboard.current_focus();
+        let focus_on_emacs = current == self.emacs_focus_target();
+
+        if focus_on_emacs {
+            if let Some(saved) = self.focus.last_app_focus.take() {
+                if saved.alive() {
+                    keyboard.set_focus(self, Some(saved), serial);
+                }
+            }
+        } else {
+            if let Some(ref cur) = current {
+                self.focus.last_app_focus = Some(cur.clone());
+            }
+            if let Some(emacs) = self.emacs_focus_target() {
+                keyboard.set_focus(self, Some(emacs), serial);
+            }
+        }
+    }
+
     /// emthin's winit window lost focus (Alt+Tab away, minimize, etc.).
     /// Save the current keyboard focus and clear it so embedded clients
     /// stop thinking they still have focus. `focus_changed` cascades the
@@ -385,119 +303,5 @@ impl EmthinState {
         };
         let serial = SERIAL_COUNTER.next_serial();
         keyboard.set_focus(self, Some(saved), serial);
-    }
-
-    /// Read the current PRIMARY selection from the focused seat and
-    /// promote it to CLIPBOARD.  Used by M-w on embedded apps.
-    ///
-    /// The data arrives asynchronously through a calloop-registered
-    /// pipe; once read it is cached in `SelectionState::clipboard_cache`
-    /// and a compositor-owned CLIPBOARD selection is set (plus host
-    /// clipboard sync).
-    fn promote_primary_to_clipboard(&mut self) {
-        tracing::info!(
-            "M-w copy: WAYLAND_DISPLAY={:?} clipboard_backend={}",
-            std::env::var("WAYLAND_DISPLAY"),
-            self.selection.clipboard.is_some(),
-        );
-        use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction};
-        use smithay::wayland::selection::data_device::set_data_device_selection;
-        use smithay::wayland::selection::primary_selection::{
-            request_primary_client_selection, SelectionRequestError,
-        };
-        use std::os::fd::IntoRawFd;
-        use std::os::unix::io::AsRawFd;
-        use std::os::unix::io::FromRawFd;
-
-        // Try MIME types in priority order.  Many apps only offer
-        // `text/plain` without the charset parameter, so we must
-        // fall back.
-        let candidates = &["text/plain;charset=utf-8", "text/plain"];
-
-        for &raw_mime in candidates {
-            let mut fds = [-1i32, -1i32];
-            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
-                continue;
-            }
-            let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[0]) };
-            let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(fds[1]) };
-
-            tracing::info!("M-w copy: trying mime={raw_mime}");
-            match request_primary_client_selection(&self.seat, raw_mime.to_string(), write_fd) {
-                Ok(()) => {
-                    tracing::info!("M-w copy: request ok, flushing display");
-                    let _ = self.display_handle.flush_clients();
-                    let file = unsafe { std::fs::File::from_raw_fd(read_fd.into_raw_fd()) };
-                    let mut buf: Vec<u8> = Vec::new();
-                    let mime_types: Vec<String> = vec![
-                        "text/plain;charset=utf-8".to_string(),
-                        "text/plain".to_string(),
-                    ];
-                    if let Err(e) = self.loop_handle.insert_source(
-                        Generic::new(file, Interest::READ, Mode::Level),
-                        move |_, file_ref, state| {
-                            let mut tmp = [0u8; 65536];
-                            loop {
-                                // SAFETY: tmp is valid, fd is open and non-blocking.
-                                let n = unsafe {
-                                    libc::read(
-                                        std::os::unix::io::AsFd::as_fd(file_ref).as_raw_fd(),
-                                        tmp.as_mut_ptr().cast(),
-                                        tmp.len(),
-                                    )
-                                };
-                                if n > 0 {
-                                    tracing::info!("M-w copy: read {} bytes", n);
-                                    buf.extend_from_slice(&tmp[..n as usize]);
-                                } else if n == 0 {
-                                    let total = buf.len();
-                                    if !buf.is_empty() {
-                                        state.selection.clipboard_cache =
-                                            Some((mime_types.clone(), std::mem::take(&mut buf)));
-                                        tracing::info!(
-                                            "M-w copy: setting clipboard, {} bytes",
-                                            total
-                                        );
-                                        set_data_device_selection(
-                                            &state.display_handle,
-                                            &state.seat,
-                                            mime_types.clone(),
-                                            (),
-                                        );
-                                        if let Some(ref mut cb) = state.selection.clipboard {
-                                            tracing::info!("M-w copy: syncing to host");
-                                            cb.set_host_selection(
-                                                emthin_clipboard::SelectionKind::Clipboard,
-                                                &mime_types,
-                                            );
-                                        }
-                                    }
-                                    return Ok(PostAction::Remove);
-                                } else {
-                                    let err = std::io::Error::last_os_error();
-                                    if err.kind() == std::io::ErrorKind::WouldBlock {
-                                        return Ok(PostAction::Continue);
-                                    }
-                                    tracing::warn!("M-w copy pipe error: {err}");
-                                    return Ok(PostAction::Remove);
-                                }
-                            }
-                        },
-                    ) {
-                        tracing::warn!("M-w copy: failed to register pipe source: {e}");
-                    }
-                    return;
-                }
-                Err(SelectionRequestError::InvalidMimetype) => {
-                    tracing::info!("M-w copy: {raw_mime} not offered");
-                    let _ = unsafe { libc::close(read_fd.into_raw_fd()) };
-                }
-                Err(e) => {
-                    tracing::info!("M-w copy: selection unavailable ({e:?})");
-                    let _ = unsafe { libc::close(read_fd.into_raw_fd()) };
-                    return;
-                }
-            }
-        }
     }
 }

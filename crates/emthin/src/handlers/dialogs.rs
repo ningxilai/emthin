@@ -48,13 +48,9 @@ pub fn promote_floating_dialog(
     });
     surface.send_pending_configure();
 
-    let prefix_active = state.focus.is_active(crate::state::FocusOverride::Prefix);
-    tracing::info!(prefix_active, "floating dialog: granting keyboard focus");
-    if !prefix_active {
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        if let Some(keyboard) = state.seat.get_keyboard() {
-            keyboard.set_focus(state, Some(window.into()), serial);
-        }
+    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+    if let Some(keyboard) = state.seat.get_keyboard() {
+        keyboard.set_focus(state, Some(window.into()), serial);
     }
 }
 

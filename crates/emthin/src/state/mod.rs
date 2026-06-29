@@ -69,13 +69,9 @@ pub enum SelectionOrigin {
     Host,
 }
 
-/// Kind of focus override currently in effect. Multiple may be active
-/// concurrently (e.g. user Alt+Tab away from emthin while in middle of
-/// an Emacs prefix chord).
+/// Kind of focus override currently in effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FocusOverride {
-    /// Emacs C-x / C-c / M-x chord redirected focus to Emacs.
-    Prefix,
     /// Emthin's window itself lost host-level focus (Alt+Tab away).
     Host,
 }
@@ -89,13 +85,13 @@ pub enum FocusOverride {
 #[derive(Default)]
 pub struct FocusState {
     saves: std::collections::HashMap<FocusOverride, Option<crate::KeyboardFocusTarget>>,
+    /// Last embedded app that had keyboard focus. Used by WakeUp toggle.
+    pub last_app_focus: Option<crate::KeyboardFocusTarget>,
 }
 
 impl FocusState {
     /// Save `current` as the focus to restore when this override exits.
-    /// **Always overwrites.** Callers that need idempotence (the
-    /// `prefix_done`-may-be-lost guard in input.rs) must check
-    /// `is_active(kind)` first.
+    /// **Always overwrites.**
     pub fn enter(&mut self, kind: FocusOverride, current: Option<crate::KeyboardFocusTarget>) {
         self.saves.insert(kind, current);
     }
@@ -112,15 +108,16 @@ impl FocusState {
         self.saves.contains_key(&kind)
     }
 
-    /// Clear every saved-focus slot. Called on workspace switch: the
-    /// saved targets may reference surfaces in the departing workspace,
-    /// which become stale the moment `switch_workspace` swaps the
-    /// active `Space`. Without this, an Alt+Tab-away → workspace-switch
-    /// → Alt+Tab-back sequence would restore focus to a surface in the
-    /// now-inactive workspace (sending `wl_keyboard.enter` to an
-    /// unmapped client).
+    /// Clear every saved-focus slot and the last-app focus.
+    /// Called on workspace switch: the saved targets may reference
+    /// surfaces in the departing workspace, which become stale the
+    /// moment `switch_workspace` swaps the active `Space`. Without
+    /// this, an Alt+Tab-away → workspace-switch → Alt+Tab-back
+    /// sequence would restore focus to a surface in the now-inactive
+    /// workspace (sending `wl_keyboard.enter` to an unmapped client).
     pub fn reset_on_workspace_switch(&mut self) {
         self.saves.clear();
+        self.last_app_focus = None;
     }
 }
 
@@ -133,10 +130,9 @@ pub struct SelectionState {
     pub clipboard_origin: SelectionOrigin,
     /// Where the current primary selection came from.
     pub primary_origin: SelectionOrigin,
-    /// Cached payload for a compositor-owned clipboard selection
-    /// (populated by M-w copy from an embedded app's PRIMARY
-    /// selection).  `(mime_types, data)` — `send_selection` writes
-    /// `data` into the fd when the requested mime_type matches.
+    /// Cached payload for a compositor-owned clipboard selection.
+    /// `(mime_types, data)` — `send_selection` writes `data` into
+    /// the fd when the requested mime_type matches.
     pub clipboard_cache: Option<(Vec<String>, Vec<u8>)>,
 }
 
@@ -487,30 +483,19 @@ impl EmthinState {
     }
 
     /// Apply the window-manager's auto-focus policy when a new embedded
-    /// toplevel maps: grant keyboard focus + notify Emacs — unless a
-    /// prefix-key sequence is in flight (C-x / C-c / M-x).
+    /// toplevel maps: grant keyboard focus + notify Emacs.
     ///
     /// Mirrors sway's `view_map()` → `input_manager_set_focus()`
     /// pipeline. Single entry point for xdg_shell `new_toplevel`.
     pub fn auto_focus_new_window(&mut self, window: Window, window_id: u64) {
-        let focus_view = crate::ipc::OutgoingMessage::FocusView {
-            window_id,
-            view_id: 0,
-        };
-
-        // Prefix sequence active: the user is typing C-x ... , any focus
-        // steal would break the sequence. Still inform Emacs so its
-        // buffer-level "focused window" tracking stays correct.
-        if self.focus.is_active(FocusOverride::Prefix) {
-            self.ipc.send(focus_view);
-            return;
-        }
-
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(window.into()), serial);
         }
-        self.ipc.send(focus_view);
+        self.ipc.send(crate::ipc::OutgoingMessage::FocusView {
+            window_id,
+            view_id: 0,
+        });
     }
 
     /// Resolve a `wl_surface` to the keyboard focus target that owns it.
@@ -857,50 +842,38 @@ mod focus_state_tests {
     #[test]
     fn default_has_no_active_overrides() {
         let f = FocusState::default();
-        assert!(!f.is_active(FocusOverride::Prefix));
         assert!(!f.is_active(FocusOverride::Host));
     }
 
     #[test]
     fn enter_then_is_active() {
         let mut f = FocusState::default();
-        f.enter(FocusOverride::Prefix, None);
-        assert!(f.is_active(FocusOverride::Prefix));
+        f.enter(FocusOverride::Host, None);
+        assert!(f.is_active(FocusOverride::Host));
     }
 
     #[test]
     fn exit_returns_saved_and_clears() {
         let mut f = FocusState::default();
-        f.enter(FocusOverride::Prefix, None);
-        let saved = f.exit(FocusOverride::Prefix);
+        f.enter(FocusOverride::Host, None);
+        let saved = f.exit(FocusOverride::Host);
         assert_eq!(saved, Some(None), "exit returns the saved Option");
-        assert!(!f.is_active(FocusOverride::Prefix));
+        assert!(!f.is_active(FocusOverride::Host));
     }
 
     #[test]
     fn exit_inactive_returns_none() {
         let mut f = FocusState::default();
-        assert_eq!(f.exit(FocusOverride::Prefix), None);
+        assert_eq!(f.exit(FocusOverride::Host), None);
     }
 
     #[test]
-    fn reset_clears_all_overrides() {
+    fn reset_clears_all_overrides_and_last_app() {
         let mut f = FocusState::default();
-        f.enter(FocusOverride::Prefix, None);
         f.enter(FocusOverride::Host, None);
+        f.last_app_focus = None; // simulate some prior state
         f.reset_on_workspace_switch();
-        assert!(!f.is_active(FocusOverride::Prefix));
         assert!(!f.is_active(FocusOverride::Host));
-    }
-
-    #[test]
-    fn overrides_stack_independently() {
-        let mut f = FocusState::default();
-        f.enter(FocusOverride::Prefix, None);
-        f.enter(FocusOverride::Host, None);
-        // Exit prefix; host stays.
-        f.exit(FocusOverride::Prefix);
-        assert!(!f.is_active(FocusOverride::Prefix));
-        assert!(f.is_active(FocusOverride::Host));
+        assert!(f.last_app_focus.is_none());
     }
 }

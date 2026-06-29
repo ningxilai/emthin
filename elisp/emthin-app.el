@@ -94,7 +94,8 @@
              (buf (generate-new-buffer buf-name))
              (layout (make-instance 'emthin-layout-fill))
              (app (make-instance 'emthin--app
-                    :window-id window-id :buffer buf :layout layout)))
+                    :window-id window-id :buffer buf :layout layout))
+             win)
         (with-current-buffer buf
           (setq-local emthin--window-id window-id)
           (setq-local emthin--visible nil)
@@ -107,12 +108,16 @@
           (setq-local cursor-type nil)
            (add-hook 'kill-buffer-hook #'emthin--kill-buffer-hook nil t))
          (emthin--register-app app)
-        (if-let* ((target (emthin--take-app-target-window)))
-            (set-window-buffer target buf)
-          (display-buffer buf '((display-buffer-pop-up-window
-                                 display-buffer-use-some-window)
-                                (inhibit-same-window . t)
-                                (reusable-frames . nil))))
+        (setq win (if-let* ((target (emthin--take-app-target-window)))
+                       (progn (set-window-buffer target buf) target)
+                     (display-buffer buf '((display-buffer-pop-up-window
+                                            display-buffer-use-some-window)
+                                           (inhibit-same-window . t)
+                                           (reusable-frames . nil)))))
+        ;; Send initial geometry immediately to avoid the app flashing at
+        ;; (0, 0) before sync-frame runs.
+        (when (window-live-p win)
+          (emthin--apply-geometry app win))
         (message "emthin: app ready (id=%s)" window-id))
     (error
      (message "emthin: window-created error (id=%s): %s" window-id err))))
@@ -171,21 +176,6 @@
         (emthin--send 'close `(:window_id ,emthin--window-id)))
     (error
      (message "emthin: kill-buffer-hook error: %s" err))))
-
-;; ── Post-command ──
-
-(defun emthin--post-command ()
-  "After every command: clear prefix gate globally, restore focus in app buffers."
-  (when emthin--process
-    (condition-case err
-        (progn
-          (emthin--send 'prefix-clear nil)
-          (when (local-variable-p 'emthin--window-id (current-buffer))
-            (emthin--send 'prefix-done nil)))
-      (error
-       (message "emthin: post-command error: %s" err)))))
-
-(add-hook 'post-command-hook #'emthin--post-command)
 
 ;; ── Register on dispatch hooks ──
 
